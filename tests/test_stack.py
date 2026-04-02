@@ -46,7 +46,8 @@ def _make_gslc_file(
             ds.dims[0].attach_scale(yds)
             ds.dims[1].attach_scale(xds)
 
-        grp.create_dataset("projection", data=np.uint32(32611))
+        proj = grp.create_dataset("projection", data=np.uint32(32611))
+        proj.attrs["epsg_code"] = 32611
     return path
 
 
@@ -125,6 +126,12 @@ class TestStackGSLCs:
         p = _make_gslc_file(tmp_path / "single.h5")
         stack = stack_gslcs([p])
         assert stack.shape == (1, 8, 10)
+
+    def test_crs_assigned(self, three_gslcs):
+        paths, _ = three_gslcs
+        stack = stack_gslcs(paths)
+        assert stack.rio.crs is not None
+        assert stack.rio.crs.to_epsg() == 32611
 
 
 class TestStackValidation:

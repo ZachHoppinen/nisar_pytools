@@ -7,6 +7,7 @@ from typing import Any
 import dask.array as da
 import h5py
 import numpy as np
+import rioxarray  # noqa: F401 — registers .rio accessor
 import xarray as xr
 
 # 1D datasets with these names are treated as dimension coordinates
@@ -139,7 +140,15 @@ def _build_dataset(
     group_attrs.update(attrs)
 
     coords = {name: (name, arr) for name, arr in coords_data.items()}
-    return xr.Dataset(data_vars, coords=coords, attrs=group_attrs)
+    ds = xr.Dataset(data_vars, coords=coords, attrs=group_attrs)
+
+    # Assign CRS if projection with epsg_code is present
+    epsg = _extract_epsg(group)
+    if epsg is not None and "x" in coords and "y" in coords:
+        ds = ds.rio.write_crs(epsg)
+        ds = ds.rio.set_spatial_dims(x_dim="x", y_dim="y")
+
+    return ds
 
 
 def _resolve_dims(
@@ -238,6 +247,22 @@ def _get_chunks(
         return tuple(chunks_spec.get(dim, size) for dim, size in zip(dims, h5ds.shape))
 
     return h5ds.shape
+
+
+def _extract_epsg(group: h5py.Group) -> int | None:
+    """Extract EPSG code from a projection dataset in the group, if present."""
+    if "projection" not in group:
+        return None
+    proj = group["projection"]
+    if not isinstance(proj, h5py.Dataset):
+        return None
+    if "epsg_code" in proj.attrs:
+        return int(proj.attrs["epsg_code"])
+    # Fall back to the dataset value itself
+    val = proj[()]
+    if isinstance(val, (int, np.integer)):
+        return int(val)
+    return None
 
 
 def _decode_scalar(value: Any) -> Any:

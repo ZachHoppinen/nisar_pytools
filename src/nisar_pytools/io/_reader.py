@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 
+import rioxarray  # noqa: F401 — registers .rio accessor
 import xarray as xr
 
 from nisar_pytools.io._h5_to_datatree import h5_to_datatree
@@ -32,6 +33,7 @@ def open_nisar(
         Tree mirroring the HDF5 group structure. Data variables are
         dask-backed. Coordinates (``xCoordinates``, ``yCoordinates``) are
         assigned as proper dimension coordinates named ``x`` and ``y``.
+        CRS is set via rioxarray on nodes that have a ``projection`` attribute.
 
     Notes
     -----

@@ -25,7 +25,9 @@ def _create_frequency_group(parent, name, ny, nx, polarizations=("HH", "HV")):
         ds.dims[1].attach_scale(xds)
 
     grp.create_dataset("mask", shape=(ny, nx), dtype="u1", chunks=(4, 4))
-    grp.create_dataset("projection", data=np.uint32(32611))
+    proj = grp.create_dataset("projection", data=np.uint32(32611))
+    proj.attrs["epsg_code"] = 32611
+    proj.attrs["grid_mapping_name"] = "transverse_mercator"
     grp.create_dataset("centerFrequency", data=1.257e9)
     grp.create_dataset("xCoordinateSpacing", data=100.0)
     grp.create_dataset("yCoordinateSpacing", data=100.0)
@@ -45,7 +47,8 @@ def _create_gunw_subproduct(parent, name, ny, nx, data_vars, pol="HH"):
     sub.create_dataset("xCoordinates", data=x_sub)
     sub.create_dataset("yCoordinates", data=y_sub)
     sub.create_dataset("mask", shape=(ny, nx), dtype="u1", chunks=(4, 4))
-    sub.create_dataset("projection", data=np.uint32(32611))
+    sub_proj = sub.create_dataset("projection", data=np.uint32(32611))
+    sub_proj.attrs["epsg_code"] = 32611
 
     # Polarization group with its own coords and data
     pol_grp = sub.create_group(pol)
@@ -55,7 +58,8 @@ def _create_gunw_subproduct(parent, name, ny, nx, data_vars, pol="HH"):
     yds = pol_grp.create_dataset("yCoordinates", data=y)
     xds.make_scale("xCoordinates")
     yds.make_scale("yCoordinates")
-    pol_grp.create_dataset("projection", data=np.uint32(32611))
+    proj = pol_grp.create_dataset("projection", data=np.uint32(32611))
+    proj.attrs["epsg_code"] = 32611
 
     for var_name in data_vars:
         dtype = "c8" if "Interferogram" in var_name else "f4"

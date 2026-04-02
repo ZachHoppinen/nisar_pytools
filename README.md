@@ -4,7 +4,7 @@ Open source Python tools for working with NISAR datasets.
 
 ## About
 
-`nisar_pytools` provides utilities for accessing, reading, and analyzing data products from NASA's [NISAR](https://nisar.jpl.nasa.gov/) (NASA-ISRO Synthetic Aperture Radar) mission.
+`nisar_pytools` provides utilities for searching, downloading, reading, and processing data products from NASA's [NISAR](https://nisar.jpl.nasa.gov/) (NASA-ISRO Synthetic Aperture Radar) mission.
 
 ### Supported Products
 
@@ -19,6 +19,7 @@ Additional NISAR product types will be added over time.
 
 - Python 3.10+
 - [Miniforge](https://github.com/conda-forge/miniforge) (recommended)
+- NASA Earthdata login (for downloading from ASF)
 
 ### Installation
 
@@ -35,29 +36,113 @@ Additional NISAR product types will be added over time.
 
 ## Usage
 
+### Search and Download
+
+```python
+from nisar_pytools import find_nisar, download_urls
+
+# Search ASF for GSLC products over an area of interest
+urls = find_nisar(
+    aoi=[-115, 43, -114, 44],
+    start_date="2025-06-01",
+    end_date="2025-12-01",
+    product_type="GSLC",
+    path_number=77,
+    direction="ASCENDING",
+)
+
+# Download in parallel with automatic validation
+fps = download_urls(urls, "local/gslcs/")
+```
+
+### Read a Single File
+
 ```python
 from nisar_pytools import open_nisar
 
-# Open a NISAR HDF5 file as a lazy xarray DataTree
 dt = open_nisar("NISAR_L2_PR_GSLC_...h5")
 
-# Access a specific frequency group
+# Access a frequency/polarization group
 freq_a = dt["science/LSAR/GSLC/grids/frequencyA"].dataset
-print(freq_a)
+hh = freq_a["HH"]  # lazy dask-backed DataArray with CRS set
 
-# Data is lazily loaded — compute when needed
-phase = freq_a["HH"].values
+# Coordinates and CRS are assigned automatically
+print(hh.rio.crs)  # e.g. EPSG:32611
 ```
 
-All data arrays are dask-backed and nothing is loaded into memory until explicitly computed. Coordinates (`x`, `y`) are assigned as proper xarray dimension coordinates.
+### Stack GSLCs into a Time Series
+
+```python
+from nisar_pytools import stack_gslcs
+
+# Stack multiple same-track GSLCs into a (time, y, x) DataArray
+stack = stack_gslcs(
+    ["gslc_date1.h5", "gslc_date2.h5", "gslc_date3.h5"],
+    frequency="frequencyA",
+    polarization="HH",
+)
+# Sorted by time, grid-validated, dask-backed, CRS assigned
+```
+
+### SAR Processing
+
+```python
+from nisar_pytools.processing import (
+    interferogram, coherence, multilook, unwrap, calculate_phase
+)
+
+# Interferogram (validates matching grids)
+ifg = interferogram(slc1, slc2)
+
+# Multilooked interferogram
+ml_ifg = multilook(ifg, looks_y=4, looks_x=4)
+
+# Coherence estimation
+coh = coherence(slc1, slc2, window_size=11)
+
+# Phase unwrapping with SNAPHU
+unw, conncomp = unwrap(ifg, coh, nlooks=20.0)
+```
+
+### Phase Linking
+
+```python
+from nisar_pytools.processing import phase_link
+
+# EMI phase linking on a GSLC stack
+linked, temporal_coh = phase_link(stack, window_size=11, confidence=0.95)
+```
+
+### Polarimetric Decomposition
+
+```python
+from nisar_pytools.processing import h_a_alpha
+
+# H-A-alpha decomposition from quad-pol SLC channels
+ds = h_a_alpha(hh, hv, vv)
+# Returns Dataset with: entropy, anisotropy, alpha, mean_alpha
+```
+
+### Local Incidence Angle
+
+```python
+from nisar_pytools.utils.local_incidence_angle import local_incidence_angle
+
+lia = local_incidence_angle(dem, los_x, los_y, los_z, heights, x_rg, y_rg, epsg=32611)
+```
 
 ## Roadmap
 
-- [x] Lazy HDF5 reader returning xarray DataTree
-- [x] GSLC support
-- [x] GUNW support (multi-resolution sub-products)
-- [ ] Zarr export utilities
-- [ ] Visualization helpers
+- [x] Lazy HDF5 reader returning xarray DataTree with CRS
+- [x] GSLC and GUNW support
+- [x] ASF search and parallel download with validation
+- [x] GSLC time-series stacking
+- [x] Interferogram, coherence, multilooking, phase extraction
+- [x] Phase unwrapping (SNAPHU)
+- [x] Phase linking (EMI with SHP selection)
+- [x] Polarimetric decomposition (H-A-alpha)
+- [x] Local incidence angle computation
+- [x] Visualization helpers (amplitude, phase, interferogram, coherence)
 - [ ] Support for additional NISAR product types
 
 ## Contributing

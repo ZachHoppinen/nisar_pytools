@@ -9,6 +9,7 @@ import dask.array as da
 import h5py
 import numpy as np
 import pandas as pd
+import rioxarray  # noqa: F401 — registers .rio accessor
 import xarray as xr
 
 from nisar_pytools.utils._validation import validate_nisar_hdf5
@@ -110,6 +111,12 @@ def stack_gslcs(
         },
     )
 
+    # Assign CRS if available
+    epsg = ref.get("epsg")
+    if epsg is not None:
+        result = result.rio.write_crs(epsg)
+        result = result.rio.set_spatial_dims(x_dim="x", y_dim="y")
+
     # Keep file handles alive by attaching to the underlying array object
     result.attrs["_h5files"] = [e["h5file"] for e in entries]
 
@@ -166,6 +173,15 @@ def _extract_entry(
     x = grp["xCoordinates"][()]
     y = grp["yCoordinates"][()]
 
+    # EPSG from projection dataset
+    epsg = None
+    if "projection" in grp:
+        proj_ds = grp["projection"]
+        if "epsg_code" in proj_ds.attrs:
+            epsg = int(proj_ds.attrs["epsg_code"])
+        else:
+            epsg = int(proj_ds[()])
+
     # Lazy data
     ds = grp[polarization]
     chunk_spec = _resolve_chunks(ds, chunks)
@@ -177,6 +193,7 @@ def _extract_entry(
         "frame": frame,
         "x": x,
         "y": y,
+        "epsg": epsg,
         "dask_array": arr,
         "h5file": h5file,
         "filepath": filepath,

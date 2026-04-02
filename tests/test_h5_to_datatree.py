@@ -4,7 +4,6 @@ import dask.array as da
 import h5py
 import numpy as np
 import pytest
-import xarray as xr
 
 from nisar_pytools.io._h5_to_datatree import h5_to_datatree
 
@@ -82,8 +81,8 @@ class TestGSLCDataTree:
             dt = h5_to_datatree(f)
 
         hh = dt["science/LSAR/GSLC/grids/frequencyA"].dataset["HH"]
-        assert hh.attrs["grid_mapping"] == "projection"
         assert "description" in hh.attrs
+        assert hh.attrs["description"] == "Focused SLC image (HH)"
 
     def test_root_attrs(self, gslc_h5):
         with h5py.File(gslc_h5, "r") as f:

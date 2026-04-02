@@ -3,7 +3,6 @@
 import os
 
 import dask.array as da
-import h5py
 import pytest
 import xarray as xr
 
@@ -52,6 +51,12 @@ class TestOpenNisar:
         path.write_text("not hdf5")
         with pytest.raises(ValueError, match="Not a valid HDF5 file"):
             open_nisar(path)
+
+    def test_crs_assigned(self, gslc_h5):
+        dt = open_nisar(gslc_h5)
+        freq_a = dt["science/LSAR/GSLC/grids/frequencyA"].dataset
+        assert freq_a["HH"].rio.crs is not None
+        assert freq_a["HH"].rio.crs.to_epsg() == 32611
 
     def test_accepts_string_path(self, gslc_h5):
         dt = open_nisar(str(gslc_h5))
