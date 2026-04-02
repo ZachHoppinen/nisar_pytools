@@ -84,7 +84,10 @@ def gslc_h5(tmp_path):
         ident = f.create_group("science/LSAR/identification")
         ident.create_dataset("productType", data=b"GSLC")
         ident.create_dataset("trackNumber", data=np.uint32(77))
+        ident.create_dataset("frameNumber", data=np.uint16(24))
         ident.create_dataset("orbitPassDirection", data=b"Ascending")
+        ident.create_dataset("absoluteOrbitNumber", data=np.uint32(1387))
+        ident.create_dataset("zeroDopplerStartTime", data=b"2025-11-03T12:46:15.000000000")
 
         # Grids
         grids = f.create_group("science/LSAR/GSLC/grids")
