@@ -7,7 +7,7 @@ from datetime import datetime
 
 import asf_search as asf
 
-from nisar_pytools.utils._validation import validate_nisar_hdf5  # noqa: F401 (re-export)
+from nisar_pytools.utils.validation import validate_nisar_hdf5  # noqa: F401 (re-export)
 
 log = logging.getLogger(__name__)
 
@@ -71,7 +71,7 @@ def find_nisar(
     ValueError
         If product_type is not recognized or no results found.
     """
-    from nisar_pytools.utils._search_validation import validate_aoi, validate_dates
+    from nisar_pytools.utils.search_validation import validate_aoi, validate_dates
 
     aoi_geom = validate_aoi(aoi)
     start, end = validate_dates(start_date, end_date)

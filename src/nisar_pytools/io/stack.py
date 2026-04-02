@@ -12,7 +12,7 @@ import pandas as pd
 import rioxarray  # noqa: F401 — registers .rio accessor
 import xarray as xr
 
-from nisar_pytools.utils._validation import validate_nisar_hdf5
+from nisar_pytools.utils.validation import validate_nisar_hdf5
 
 # HDF5 paths
 _IDENT_PATH = "science/LSAR/identification"

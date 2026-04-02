@@ -1,4 +1,4 @@
-"""Tests for nisar_pytools.utils._search_validation."""
+"""Tests for nisar_pytools.utils.search_validation."""
 
 from pathlib import Path
 
@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 from shapely.geometry import Point, Polygon, box
 
-from nisar_pytools.utils._search_validation import (
+from nisar_pytools.utils.search_validation import (
     validate_aoi,
     validate_dates,
     validate_path,

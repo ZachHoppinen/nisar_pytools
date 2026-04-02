@@ -1,9 +1,9 @@
-"""Tests for nisar_pytools.utils._validation."""
+"""Tests for nisar_pytools.utils.validation."""
 
 import h5py
 import pytest
 
-from nisar_pytools.utils._validation import (
+from nisar_pytools.utils.validation import (
     detect_product_type,
     validate_nisar_hdf5,
 )

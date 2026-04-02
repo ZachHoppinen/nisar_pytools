@@ -7,8 +7,8 @@ import os
 import rioxarray  # noqa: F401 — registers .rio accessor
 import xarray as xr
 
-from nisar_pytools.io._h5_to_datatree import h5_to_datatree
-from nisar_pytools.utils._validation import detect_product_type, validate_nisar_hdf5
+from nisar_pytools.io.h5_to_datatree import h5_to_datatree
+from nisar_pytools.utils.validation import detect_product_type, validate_nisar_hdf5
 
 
 def open_nisar(

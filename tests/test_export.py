@@ -1,10 +1,10 @@
-"""Tests for nisar_pytools.io._export."""
+"""Tests for nisar_pytools.io.export."""
 
 import numpy as np
 import pytest
 import xarray as xr
 
-from nisar_pytools.io._export import read_netcdf, to_netcdf, to_zarr
+from nisar_pytools.io.export import read_netcdf, to_netcdf, to_zarr
 
 
 def _make_dataset():

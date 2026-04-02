@@ -1,11 +1,11 @@
-"""Tests for nisar_pytools.io._h5_to_datatree."""
+"""Tests for nisar_pytools.io.h5_to_datatree."""
 
 import dask.array as da
 import h5py
 import numpy as np
 import pytest
 
-from nisar_pytools.io._h5_to_datatree import h5_to_datatree
+from nisar_pytools.io.h5_to_datatree import h5_to_datatree
 
 
 class TestGSLCDataTree:

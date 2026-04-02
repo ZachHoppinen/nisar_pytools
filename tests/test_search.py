@@ -1,4 +1,4 @@
-"""Tests for nisar_pytools.io._search (find_nisar).
+"""Tests for nisar_pytools.io.search (find_nisar).
 
 Note: Tests that hit the ASF API are marked as integration tests.
 Unit tests mock asf_search to avoid network calls.
@@ -7,7 +7,7 @@ Unit tests mock asf_search to avoid network calls.
 import pytest
 from unittest.mock import patch, MagicMock
 
-from nisar_pytools.io._search import find_nisar, PRODUCT_TYPES
+from nisar_pytools.io.search import find_nisar, PRODUCT_TYPES
 
 
 class TestFindNisarValidation:
@@ -34,7 +34,7 @@ class TestFindNisarValidation:
         assert "GUNW" in PRODUCT_TYPES
         assert "RSLC" in PRODUCT_TYPES
 
-    @patch("nisar_pytools.io._search.asf")
+    @patch("nisar_pytools.io.search.asf")
     def test_returns_h5_urls_only(self, mock_asf):
         mock_results = MagicMock()
         mock_results.find_urls.return_value = [
@@ -54,7 +54,7 @@ class TestFindNisarValidation:
         assert len(urls) == 2
         assert all(u.endswith(".h5") for u in urls)
 
-    @patch("nisar_pytools.io._search.asf")
+    @patch("nisar_pytools.io.search.asf")
     def test_passes_path_and_frame(self, mock_asf):
         mock_results = MagicMock()
         mock_results.find_urls.return_value = []
@@ -75,7 +75,7 @@ class TestFindNisarValidation:
         assert call_kwargs["frame"] == 24
         assert call_kwargs["flightDirection"] == "ASCENDING"
 
-    @patch("nisar_pytools.io._search.asf")
+    @patch("nisar_pytools.io.search.asf")
     def test_empty_results(self, mock_asf):
         mock_results = MagicMock()
         mock_results.find_urls.return_value = []

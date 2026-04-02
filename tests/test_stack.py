@@ -1,4 +1,4 @@
-"""Tests for nisar_pytools.io._stack (stack_gslcs)."""
+"""Tests for nisar_pytools.io.stack (stack_gslcs)."""
 
 import dask.array as da
 import h5py
@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from nisar_pytools.io._stack import stack_gslcs
+from nisar_pytools.io.stack import stack_gslcs
 
 
 def _make_gslc_file(

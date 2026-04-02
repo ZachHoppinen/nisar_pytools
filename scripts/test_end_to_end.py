@@ -6,7 +6,7 @@ Uses local GSLC files (already downloaded).
 from nisar_pytools import find_nisar, open_nisar, stack_gslcs
 from nisar_pytools.processing import interferogram, coherence, calculate_phase, multilook
 from nisar_pytools.utils.metadata import get_acquisition_time, get_orbit_info
-from nisar_pytools.io._export import to_netcdf
+from nisar_pytools.io.export import to_netcdf
 import numpy as np
 
 AOI = [-119.15, 42.85, -114.62, 46.05]

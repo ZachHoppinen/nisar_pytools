@@ -1,4 +1,4 @@
-"""Tests for nisar_pytools.io._reader (open_nisar entry point)."""
+"""Tests for nisar_pytools.io.reader (open_nisar entry point)."""
 
 import os
 

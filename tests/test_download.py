@@ -1,11 +1,11 @@
-"""Tests for nisar_pytools.io._download."""
+"""Tests for nisar_pytools.io.download."""
 
 from unittest.mock import MagicMock, patch
 
 import h5py
 import numpy as np
 
-from nisar_pytools.io._download import (
+from nisar_pytools.io.download import (
     download_urls,
     validate_h5_quick,
     validate_h5_thorough,
@@ -66,7 +66,7 @@ class TestValidateH5Thorough:
 
 
 class TestDownloadUrls:
-    @patch("nisar_pytools.io._download.requests.Session")
+    @patch("nisar_pytools.io.download.requests.Session")
     def test_downloads_files(self, mock_session_cls, tmp_path):
         mock_session = MagicMock()
         mock_session_cls.return_value = mock_session
@@ -83,7 +83,7 @@ class TestDownloadUrls:
         existing = tmp_path / "file.h5"
         existing.write_bytes(b"data")
 
-        with patch("nisar_pytools.io._download.requests.Session"):
+        with patch("nisar_pytools.io.download.requests.Session"):
             fps = download_urls(["https://example.com/file.h5"], tmp_path, validate=False)
         assert len(fps) == 1
         assert fps[0] == existing
@@ -92,7 +92,7 @@ class TestDownloadUrls:
         existing = tmp_path / "file.txt"
         existing.write_bytes(b"old data")
 
-        with patch("nisar_pytools.io._download.requests.Session") as mock_cls:
+        with patch("nisar_pytools.io.download.requests.Session") as mock_cls:
             mock_session = MagicMock()
             mock_cls.return_value = mock_session
             mock_response = MagicMock()
@@ -107,7 +107,7 @@ class TestDownloadUrls:
 
     def test_creates_directory(self, tmp_path):
         out = tmp_path / "new" / "nested"
-        with patch("nisar_pytools.io._download.requests.Session") as mock_cls:
+        with patch("nisar_pytools.io.download.requests.Session") as mock_cls:
             mock_session = MagicMock()
             mock_cls.return_value = mock_session
             mock_response = MagicMock()
@@ -123,7 +123,7 @@ class TestDownloadUrls:
             (tmp_path / name).write_bytes(b"x")
 
         urls = [f"https://example.com/{n}" for n in ["c.h5", "a.h5", "b.h5"]]
-        with patch("nisar_pytools.io._download.requests.Session"):
+        with patch("nisar_pytools.io.download.requests.Session"):
             fps = download_urls(urls, tmp_path, validate=False)
 
         names = [fp.name for fp in fps]
@@ -133,7 +133,7 @@ class TestDownloadUrls:
         """Download + validate with a real valid HDF5 file."""
         _make_valid_nisar_h5(tmp_path / "valid.h5")
         # File already exists, so download is skipped, but validation runs
-        with patch("nisar_pytools.io._download.requests.Session"):
+        with patch("nisar_pytools.io.download.requests.Session"):
             fps = download_urls(
                 ["https://example.com/valid.h5"], tmp_path, validate=True
             )
@@ -144,7 +144,7 @@ class TestDownloadUrls:
         bad = tmp_path / "bad.h5"
         bad.write_text("not hdf5")
 
-        with patch("nisar_pytools.io._download.requests.Session") as mock_cls:
+        with patch("nisar_pytools.io.download.requests.Session") as mock_cls:
             mock_session = MagicMock()
             mock_cls.return_value = mock_session
 
