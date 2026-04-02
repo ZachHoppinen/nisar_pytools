@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -l {0}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: conda-incubator/setup-miniconda@v3
+        with:
+          environment-file: environment.yml
+          activate-environment: nisar_pytools
+          miniforge-version: latest
+
+      - name: Lint
+        run: ruff check src/ tests/
+
+      - name: Run tests
+        run: pytest tests/ -v -m "not integration"

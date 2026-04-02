@@ -4,11 +4,12 @@ channels:
   - defaults
 dependencies:
   - python>=3.10
-  - h5py
-  - numpy
-  - rasterio
-  - rioxarray
-  - xarray
+  - dask>=2024.0
+  - h5py>=3.10
+  - numpy>=1.24
+  - rasterio>=1.3
+  - rioxarray>=0.15
+  - xarray>=2024.10
   - pytest
   - ruff
   - jupyter
