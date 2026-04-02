@@ -1,0 +1,24 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+type: software
+title: "nisar_pytools"
+abstract: "Open source Python tools for working with NISAR datasets"
+license: MIT
+version: 0.1.1
+date-released: 2026-04-02
+url: "https://github.com/zmhoppinen/nisar_pytools"
+repository-code: "https://github.com/zmhoppinen/nisar_pytools"
+authors:
+  - family-names: Hoppinen
+    given-names: Zachary
+    email: zmhoppinen@alaska.edu
+    orcid: "https://orcid.org/0000-0003-0916-7774"
+keywords:
+  - nisar
+  - sar
+  - insar
+  - radar
+  - remote-sensing
+  - hdf5
+  - xarray
+  - python
