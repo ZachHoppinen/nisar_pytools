@@ -1,0 +1,18 @@
+name: nisar_pytools
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python>=3.10
+  - h5py
+  - numpy
+  - rasterio
+  - rioxarray
+  - xarray
+  - pytest
+  - ruff
+  - jupyter
+  - matplotlib
+  - pip
+  - pip:
+      - -e .
