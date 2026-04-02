@@ -230,6 +230,37 @@ class TestCoherence:
         # Larger window should produce smoother (lower variance) output
         assert np.std(coh11.values) < np.std(coh3.values)
 
+    def test_gaussian_identical_gives_one(self):
+        slc = _make_slc()
+        coh = coherence(slc, slc, window_size=3, method="gaussian")
+        interior = coh.values[5:-5, 5:-5]
+        np.testing.assert_allclose(interior, 1.0, atol=1e-4)
+
+    def test_gaussian_output_range(self):
+        slc1, slc2 = _make_slc_pair()
+        coh = coherence(slc1, slc2, window_size=3, method="gaussian")
+        assert np.all(coh.values >= 0)
+        assert np.all(coh.values <= 1)
+
+    def test_gaussian_correlated_high(self):
+        slc1, slc2 = _make_slc_pair()
+        coh = coherence(slc1, slc2, window_size=3, method="gaussian")
+        interior = coh.values[5:-5, 5:-5]
+        assert np.mean(interior) > 0.7
+
+    def test_gaussian_smoother_than_boxcar(self):
+        slc1, slc2 = _make_slc_pair()
+        coh_box = coherence(slc1, slc2, window_size=5, method="boxcar")
+        coh_gau = coherence(slc1, slc2, window_size=3, method="gaussian")
+        # Gaussian with sigma=3 covers a wider effective window than boxcar 5
+        # so should be smoother
+        assert np.std(coh_gau.values) < np.std(coh_box.values)
+
+    def test_invalid_method_raises(self):
+        slc1, slc2 = _make_slc_pair()
+        with pytest.raises(ValueError, match="method must be"):
+            coherence(slc1, slc2, window_size=5, method="hamming")
+
 
 class TestUnwrap:
     def test_basic_unwrap(self):

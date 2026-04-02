@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import numpy as np
 import xarray as xr
-from scipy.ndimage import uniform_filter
+from scipy.ndimage import gaussian_filter, uniform_filter
 
 
 def calculate_phase(data: xr.DataArray) -> xr.DataArray:
@@ -170,6 +170,7 @@ def coherence(
     slc1: xr.DataArray,
     slc2: xr.DataArray,
     window_size: int = 5,
+    method: str = "boxcar",
 ) -> xr.DataArray:
     """Estimate interferometric coherence magnitude over a spatial window.
 
@@ -184,7 +185,13 @@ def coherence(
     slc1, slc2 : xr.DataArray
         Complex-valued SLC images with matching coordinates.
     window_size : int
-        Side length of the square averaging window. Must be odd and >= 1.
+        For ``"boxcar"``: side length of the square averaging window.
+        Must be odd and >= 1.
+        For ``"gaussian"``: used as the sigma (standard deviation) of the
+        Gaussian kernel in pixels.
+    method : str
+        Averaging method: ``"boxcar"`` (default) for uniform weighting,
+        or ``"gaussian"`` for Gaussian-weighted averaging.
 
     Returns
     -------
@@ -192,8 +199,16 @@ def coherence(
         Coherence magnitude in [0, 1], same coordinates as inputs.
     """
     _check_matching_grids(slc1, slc2)
-    if window_size < 1 or window_size % 2 == 0:
-        raise ValueError(f"window_size must be odd and >= 1, got {window_size}")
+
+    if method not in ("boxcar", "gaussian"):
+        raise ValueError(f"method must be 'boxcar' or 'gaussian', got '{method}'")
+
+    if method == "boxcar":
+        if window_size < 1 or window_size % 2 == 0:
+            raise ValueError(f"window_size must be odd and >= 1, got {window_size}")
+    else:
+        if window_size < 1:
+            raise ValueError(f"window_size (sigma) must be >= 1, got {window_size}")
 
     s1 = slc1.values
     s2 = slc2.values
@@ -202,11 +217,14 @@ def coherence(
     pow1 = np.abs(s1) ** 2
     pow2 = np.abs(s2) ** 2
 
-    avg_ifg = uniform_filter(ifg.real, size=window_size) + 1j * uniform_filter(
-        ifg.imag, size=window_size
-    )
-    avg_pow1 = uniform_filter(pow1, size=window_size)
-    avg_pow2 = uniform_filter(pow2, size=window_size)
+    def _avg(a):
+        if method == "boxcar":
+            return uniform_filter(a, size=window_size)
+        return gaussian_filter(a, sigma=window_size)
+
+    avg_ifg = _avg(ifg.real) + 1j * _avg(ifg.imag)
+    avg_pow1 = _avg(pow1)
+    avg_pow2 = _avg(pow2)
 
     denom = np.sqrt(avg_pow1 * avg_pow2)
     with np.errstate(divide="ignore", invalid="ignore"):
