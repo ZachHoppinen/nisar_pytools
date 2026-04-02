@@ -37,7 +37,7 @@ class TestFindNisarValidation:
     @patch("nisar_pytools.io._search.asf")
     def test_returns_h5_urls_only(self, mock_asf):
         mock_results = MagicMock()
-        mock_results.urls.return_value = [
+        mock_results.find_urls.return_value = [
             "https://asf.alaska.edu/data/file.h5",
             "https://asf.alaska.edu/data/file.xml",
             "https://asf.alaska.edu/data/file.png",
@@ -57,7 +57,7 @@ class TestFindNisarValidation:
     @patch("nisar_pytools.io._search.asf")
     def test_passes_path_and_frame(self, mock_asf):
         mock_results = MagicMock()
-        mock_results.urls.return_value = []
+        mock_results.find_urls.return_value = []
         mock_asf.search.return_value = mock_results
         mock_asf.PLATFORM.NISAR = "NISAR"
 
@@ -78,7 +78,7 @@ class TestFindNisarValidation:
     @patch("nisar_pytools.io._search.asf")
     def test_empty_results(self, mock_asf):
         mock_results = MagicMock()
-        mock_results.urls.return_value = []
+        mock_results.find_urls.return_value = []
         mock_asf.search.return_value = mock_results
         mock_asf.PLATFORM.NISAR = "NISAR"
 
