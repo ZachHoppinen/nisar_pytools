@@ -16,6 +16,8 @@ dependencies:
   - scipy>=1.10
   - snaphu>=0.3
   - xarray>=2024.10
+  - zarr
+  - h5netcdf
   - nbstripout
   - pre-commit
   - pytest

@@ -1,0 +1,4 @@
+include LICENSE.txt
+include README.md
+include CHANGELOG.md
+recursive-include src/nisar_pytools *.py

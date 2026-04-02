@@ -1,6 +1,7 @@
 """Tests for nisar_pytools.io._export."""
 
 import numpy as np
+import pytest
 import xarray as xr
 
 from nisar_pytools.io._export import read_netcdf, to_netcdf, to_zarr
@@ -22,6 +23,14 @@ def _make_complex_da():
     return xr.DataArray(data, dims=["y", "x"], coords={"y": y, "x": x}, name="slc")
 
 
+try:
+    import zarr as _zarr  # noqa: F401
+    _has_zarr = True
+except ImportError:
+    _has_zarr = False
+
+
+@pytest.mark.skipif(not _has_zarr, reason="zarr not installed")
 class TestToZarr:
     def test_dataset(self, tmp_path):
         ds = _make_dataset()

@@ -3,12 +3,28 @@ requires = ["setuptools>=68.0", "setuptools-scm>=8.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "nisar_pytools"
+name = "nisar-pytools"
 version = "0.1.0"
 description = "Open source Python tools for working with NISAR datasets"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
+authors = [
+    { name = "Zachary Hoppinen", email = "zachary.hoppinen@gmail.com" },
+]
+keywords = ["nisar", "sar", "insar", "radar", "remote-sensing", "hdf5", "xarray"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: GIS",
+    "Topic :: Scientific/Engineering :: Image Processing",
+]
 dependencies = [
     "asf_search>=7.0",
     "dask[array]>=2024.0",
@@ -25,16 +41,32 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+dem = [
+    "dem_stitcher",
+]
 dev = [
+    "build",
     "nbstripout",
     "pre-commit",
     "pytest",
     "ruff",
+    "twine",
 ]
 notebooks = [
     "jupyter",
     "matplotlib",
 ]
+viz = [
+    "matplotlib",
+]
+all = [
+    "nisar-pytools[dem,notebooks,viz]",
+]
+
+[project.urls]
+Homepage = "https://github.com/zmhoppinen/nisar_pytools"
+Repository = "https://github.com/zmhoppinen/nisar_pytools"
+Issues = "https://github.com/zmhoppinen/nisar_pytools/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
