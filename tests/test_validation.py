@@ -1,7 +1,6 @@
 """Tests for nisar_pytools.utils._validation."""
 
 import h5py
-import numpy as np
 import pytest
 
 from nisar_pytools.utils._validation import (
