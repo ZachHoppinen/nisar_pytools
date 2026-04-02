@@ -23,16 +23,25 @@ Additional NISAR product types will be added over time.
 
 ### Installation
 
-1. Clone the repository
-   ```sh
-   git clone https://github.com/zmhoppinen/nisar_pytools.git
-   cd nisar_pytools
-   ```
-2. Create the conda environment
-   ```sh
-   mamba env create -f environment.yml
-   conda activate nisar_pytools
-   ```
+**From PyPI:**
+```sh
+pip install nisar-pytools
+```
+
+With optional extras:
+```sh
+pip install nisar-pytools[dem]       # DEM fetching (dem_stitcher)
+pip install nisar-pytools[viz]       # Visualization (matplotlib)
+pip install nisar-pytools[all]       # Everything
+```
+
+**From source (for development):**
+```sh
+git clone https://github.com/zmhoppinen/nisar_pytools.git
+cd nisar_pytools
+mamba env create -f environment.yml
+conda activate nisar_pytools
+```
 
 ## Usage
 
