@@ -8,8 +8,8 @@ Open source Python tools for working with NISAR datasets.
 
 ### Supported Products
 
-- **GUNW** - Geocoded Unwrapped Interferogram
 - **GSLC** - Geocoded Single Look Complex
+- **GUNW** - Geocoded Unwrapped Interferogram
 
 Additional NISAR product types will be added over time.
 
@@ -18,27 +18,46 @@ Additional NISAR product types will be added over time.
 ### Prerequisites
 
 - Python 3.10+
+- [Miniforge](https://github.com/conda-forge/miniforge) (recommended)
 
 ### Installation
 
 1. Clone the repository
    ```sh
    git clone https://github.com/zmhoppinen/nisar_pytools.git
-   ```
-2. Install the package
-   ```sh
    cd nisar_pytools
-   pip install -e .
+   ```
+2. Create the conda environment
+   ```sh
+   mamba env create -f environment.yml
+   conda activate nisar_pytools
    ```
 
 ## Usage
 
-*Coming soon* -- examples and usage documentation will be added as tools are developed.
+```python
+from nisar_pytools import open_nisar
+
+# Open a NISAR HDF5 file as a lazy xarray DataTree
+dt = open_nisar("NISAR_L2_PR_GSLC_...h5")
+
+# Access a specific frequency group
+freq_a = dt["science/LSAR/GSLC/grids/frequencyA"].dataset
+print(freq_a)
+
+# Data is lazily loaded — compute when needed
+phase = freq_a["HH"].values
+```
+
+All data arrays are dask-backed and nothing is loaded into memory until explicitly computed. Coordinates (`x`, `y`) are assigned as proper xarray dimension coordinates.
 
 ## Roadmap
 
-- [ ] GUNW reading and visualization utilities
-- [ ] GSLC reading and visualization utilities
+- [x] Lazy HDF5 reader returning xarray DataTree
+- [x] GSLC support
+- [x] GUNW support (multi-resolution sub-products)
+- [ ] Zarr export utilities
+- [ ] Visualization helpers
 - [ ] Support for additional NISAR product types
 
 ## Contributing
