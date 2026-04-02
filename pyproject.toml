@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nisar-pytools"
-version = "0.1.0"
+version = "0.1.1"
 description = "Open source Python tools for working with NISAR datasets"
 readme = "README.md"
 license = "MIT"

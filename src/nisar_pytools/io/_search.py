@@ -33,6 +33,7 @@ def find_nisar(
     frame: int | None = None,
     direction: str | None = None,
     max_results: int | None = None,
+    include_qa: bool = False,
 ) -> list[str]:
     """Search ASF for NISAR product download URLs.
 
@@ -57,6 +58,8 @@ def find_nisar(
         Flight direction: ``"ASCENDING"`` or ``"DESCENDING"``.
     max_results : int, optional
         Maximum number of results to return.
+    include_qa : bool
+        If ``True``, include QA files (``_QA_STATS.h5``). Default ``False``.
 
     Returns
     -------
@@ -105,10 +108,12 @@ def find_nisar(
     )
 
     results = asf.search(**search_kwargs)
-    urls = results.urls()
+    urls = results.find_urls()
 
-    # Filter to .h5 product files only
+    # Filter to .h5 product files, optionally excluding QA
     urls = [u for u in urls if u.endswith(".h5")]
+    if not include_qa:
+        urls = [u for u in urls if "_QA_" not in u.split("/")[-1]]
 
     log.info("Found %d URLs after filtering", len(urls))
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.1
+
+### Fixed
+- `find_nisar()` — fixed ASF API call (`results.urls()` → `results.find_urls()`)
+- QA files (`_QA_STATS.h5`) now excluded by default; use `include_qa=True` to include them
+
 ## v0.1.0
 
 ### IO
