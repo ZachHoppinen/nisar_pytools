@@ -18,10 +18,12 @@ dependencies:
   - xarray>=2024.10
   - zarr
   - h5netcdf
+  - build
   - nbstripout
   - pre-commit
   - pytest
   - ruff
+  - twine
   - jupyter
   - matplotlib
   - pip
