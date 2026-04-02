@@ -116,11 +116,14 @@ class TestStackGSLCs:
         assert stack.name == "HV"
 
     def test_file_handles_kept(self, three_gslcs):
+        from nisar_pytools.io.stack import _open_files
+
         paths, _ = three_gslcs
         stack = stack_gslcs(paths)
-        handles = stack.attrs["_h5files"]
-        assert len(handles) == 3
-        assert all(h.id.valid for h in handles)
+        # File handles should be in the module-level set
+        assert len(_open_files) >= 3
+        # Lazy data should be computable
+        _ = stack.isel(time=0, y=slice(0, 2), x=slice(0, 2)).values
 
     def test_single_file(self, tmp_path):
         p = _make_gslc_file(tmp_path / "single.h5")

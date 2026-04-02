@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 import os
+import tempfile
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -13,12 +15,14 @@ import requests
 
 log = logging.getLogger(__name__)
 
+# Thread-local storage for per-thread sessions
+_thread_local = threading.local()
+
 
 def validate_h5_quick(filepath: Path) -> bool:
     """Quick validation — check file is valid HDF5 and can open."""
     try:
         with h5py.File(filepath, "r") as f:
-            # Verify it has at least the top-level group
             _ = list(f.keys())
         return True
     except Exception:
@@ -30,34 +34,38 @@ def validate_h5_thorough(filepath: Path) -> bool:
 
     Checks that the file:
     1. Is valid HDF5
-    2. Contains ``science/LSAR/``
+    2. Contains a NISAR science band (LSAR or SSAR)
     3. Contains ``identification/productType``
-    4. Can read the product type dataset (catches truncated files)
+    4. Can read the product type and access the data group
     """
     try:
         with h5py.File(filepath, "r") as f:
-            if "science/LSAR" not in f:
-                log.warning("Missing science/LSAR: %s", filepath.name)
+            # Detect band (LSAR or SSAR)
+            band = None
+            if "science/LSAR" in f:
+                band = "LSAR"
+            elif "science/SSAR" in f:
+                band = "SSAR"
+            if band is None:
+                log.warning("Missing science/LSAR or science/SSAR: %s", filepath.name)
                 return False
 
-            pt_path = "science/LSAR/identification/productType"
+            pt_path = f"science/{band}/identification/productType"
             if pt_path not in f:
                 log.warning("Missing productType: %s", filepath.name)
                 return False
 
-            # Actually read a value to catch truncated files
-            _ = f[pt_path][()]
-
-            # Try to access the grids group to verify data section exists
+            # Read product type (single read)
             product_type = f[pt_path][()]
             if isinstance(product_type, bytes):
                 product_type = product_type.decode().strip()
 
-            grids_path = f"science/LSAR/{product_type}/grids"
-            if grids_path in f:
-                grp = f[grids_path]
-                # Read one key to verify data is accessible
-                _ = list(grp.keys())
+            # Try to access the data group
+            for data_group in ["grids", "swaths"]:
+                grids_path = f"science/{band}/{product_type}/{data_group}"
+                if grids_path in f:
+                    _ = list(f[grids_path].keys())
+                    break
 
         return True
     except Exception as e:
@@ -80,6 +88,9 @@ def download_urls(
     Skips files that already exist (unless ``reprocess=True``).
     Optionally validates downloaded HDF5 files and retries corrupted ones.
 
+    Downloads are written to a temporary file first and renamed atomically
+    on success, preventing partial/corrupt files from being left on disk.
+
     Parameters
     ----------
     urls : list of str
@@ -101,76 +112,143 @@ def download_urls(
     Returns
     -------
     list of Path
-        Paths to downloaded files, sorted alphabetically.
+        Paths to successfully downloaded files, sorted alphabetically.
+        Files that fail after all retries are excluded (with a warning logged).
     """
     out_directory = Path(out_directory)
     out_directory.mkdir(parents=True, exist_ok=True)
 
-    session = requests.Session()
-    adapter = requests.adapters.HTTPAdapter(
-        pool_connections=max_workers,
-        pool_maxsize=max_workers,
-    )
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
+    # Build URL → filename mapping, warn on duplicates
+    url_to_filename: dict[str, str] = {}
+    seen_filenames: dict[str, str] = {}
+    for url in urls:
+        fname = Path(url).name
+        if fname in seen_filenames:
+            log.warning(
+                "Duplicate filename '%s' from URLs:\n  %s\n  %s",
+                fname, seen_filenames[fname], url,
+            )
+        seen_filenames[fname] = url
+        url_to_filename[url] = fname
 
-    def _download_one(url: str) -> Path:
-        out_fp = out_directory / Path(url).name
+    def _get_session() -> requests.Session:
+        """Get a thread-local requests session."""
+        if not hasattr(_thread_local, "session"):
+            session = requests.Session()
+            adapter = requests.adapters.HTTPAdapter(
+                pool_connections=2,
+                pool_maxsize=2,
+            )
+            session.mount("https://", adapter)
+            session.mount("http://", adapter)
+            _thread_local.session = session
+        return _thread_local.session
+
+    def _download_one(url: str) -> Path | None:
+        out_fp = out_directory / url_to_filename[url]
 
         if out_fp.exists() and out_fp.stat().st_size > 0 and not reprocess:
             log.debug("Skipping (exists): %s", out_fp.name)
             return out_fp
 
+        session = _get_session()
+
         for attempt in range(retries):
+            # Write to temp file, rename on success (atomic)
+            tmp_fd = None
+            tmp_path = None
             try:
+                tmp_fd, tmp_path = tempfile.mkstemp(
+                    dir=out_directory, suffix=".tmp"
+                )
                 r = session.get(url, stream=True, timeout=timeout)
                 r.raise_for_status()
-                with open(out_fp, "wb") as f:
+                with os.fdopen(tmp_fd, "wb") as f:
+                    tmp_fd = None  # fdopen takes ownership
                     for chunk in r.iter_content(chunk_size=256 * 1024):
                         if chunk:
                             f.write(chunk)
+                # Atomic rename
+                os.replace(tmp_path, out_fp)
+                tmp_path = None
                 log.debug("Downloaded: %s", out_fp.name)
                 return out_fp
             except Exception:
                 if attempt == retries - 1:
-                    raise
+                    log.error("Failed after %d retries: %s", retries, url)
+                    return None
                 log.warning("Retry %d for %s", attempt + 1, url)
                 time.sleep(1.5)
+            finally:
+                # Clean up temp file on failure
+                if tmp_fd is not None:
+                    os.close(tmp_fd)
+                if tmp_path is not None and os.path.exists(tmp_path):
+                    os.remove(tmp_path)
 
-        return out_fp
+        return None
 
-    # Download all files
+    # Download all files, catching individual failures
     download_fps: list[Path] = []
+    failed_urls: list[str] = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(_download_one, url): url for url in urls}
         for future in as_completed(futures):
-            download_fps.append(future.result())
+            url = futures[future]
+            try:
+                result = future.result()
+                if result is not None:
+                    download_fps.append(result)
+                else:
+                    failed_urls.append(url)
+            except Exception as e:
+                log.error("Download failed for %s: %s", url, e)
+                failed_urls.append(url)
+
+    if failed_urls:
+        log.warning("%d downloads failed: %s", len(failed_urls), failed_urls)
 
     # Post-download validation
     if validate:
-        url_by_name = {Path(url).name: url for url in urls}
-        corrupted = []
-
+        corrupted: list[Path] = []
         for fp in download_fps:
             if fp.suffix.lower() == ".h5" and not validate_h5_thorough(fp):
                 corrupted.append(fp)
 
         if corrupted:
             log.warning("Found %d corrupted files, retrying...", len(corrupted))
+
+            # Build set for O(1) lookup
+            corrupted_set = set(corrupted)
+            download_fps = [fp for fp in download_fps if fp not in corrupted_set]
+
+            # Find URLs for corrupted files
+            filename_to_url = {Path(url).name: url for url in urls}
+            corrupted_urls = [
+                filename_to_url[fp.name]
+                for fp in corrupted
+                if fp.name in filename_to_url
+            ]
+
+            # Remove corrupted files from disk
             for fp in corrupted:
-                download_fps.remove(fp)
                 if fp.exists():
                     os.remove(fp)
 
             # Retry corrupted
-            corrupted_urls = [url_by_name[fp.name] for fp in corrupted if fp.name in url_by_name]
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = {executor.submit(_download_one, url): url for url in corrupted_urls}
+                futures = {
+                    executor.submit(_download_one, url): url
+                    for url in corrupted_urls
+                }
                 for future in as_completed(futures):
-                    retry_fp = future.result()
-                    if validate_h5_thorough(retry_fp):
-                        download_fps.append(retry_fp)
-                    else:
-                        log.warning("Still corrupted after retry: %s", retry_fp.name)
+                    try:
+                        retry_fp = future.result()
+                        if retry_fp is not None and validate_h5_thorough(retry_fp):
+                            download_fps.append(retry_fp)
+                        elif retry_fp is not None:
+                            log.warning("Still corrupted after retry: %s", retry_fp.name)
+                    except Exception as e:
+                        log.warning("Retry failed: %s", e)
 
     return sorted(download_fps)

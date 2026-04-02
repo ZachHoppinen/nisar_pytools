@@ -88,3 +88,39 @@ class TestFindNisarValidation:
             end_date="2025-07-01",
         )
         assert urls == []
+
+    @patch("nisar_pytools.io.search.asf")
+    def test_handles_query_strings_in_urls(self, mock_asf):
+        mock_results = MagicMock()
+        mock_results.find_urls.return_value = [
+            "https://asf.alaska.edu/data/product.h5?token=abc123",
+            "https://asf.alaska.edu/data/product_QA_STATS.h5?token=abc123",
+        ]
+        mock_asf.search.return_value = mock_results
+        mock_asf.PLATFORM.NISAR = "NISAR"
+
+        urls = find_nisar(
+            aoi=[-115, 43, -114, 44],
+            start_date="2025-06-01",
+            end_date="2025-07-01",
+        )
+        assert len(urls) == 1
+        assert "QA" not in urls[0]
+
+    @patch("nisar_pytools.io.search.asf")
+    def test_include_qa(self, mock_asf):
+        mock_results = MagicMock()
+        mock_results.find_urls.return_value = [
+            "https://asf.alaska.edu/data/product.h5",
+            "https://asf.alaska.edu/data/product_QA_STATS.h5",
+        ]
+        mock_asf.search.return_value = mock_results
+        mock_asf.PLATFORM.NISAR = "NISAR"
+
+        urls = find_nisar(
+            aoi=[-115, 43, -114, 44],
+            start_date="2025-06-01",
+            end_date="2025-07-01",
+            include_qa=True,
+        )
+        assert len(urls) == 2

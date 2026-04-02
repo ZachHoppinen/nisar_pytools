@@ -81,7 +81,7 @@ class TestGoldsteinFilter:
     def test_invalid_overlap_raises(self):
         ifg = _make_noisy_ifg()
         with pytest.raises(ValueError, match="overlap"):
-            goldstein_filter(ifg, patch_size=32, overlap=32)
+            goldstein_filter(ifg, patch_size=32, overlap=16)
 
     def test_attrs_preserved(self):
         ifg = _make_noisy_ifg()
@@ -95,3 +95,19 @@ class TestGoldsteinFilter:
         ifg = _make_noisy_ifg(ny=50, nx=70)
         result = goldstein_filter(ifg, patch_size=16, overlap=4)
         assert result.shape == (50, 70)
+
+    def test_real_input_raises(self):
+        da = xr.DataArray(
+            np.ones((32, 32), dtype=np.float32),
+            dims=["y", "x"],
+        )
+        with pytest.raises(ValueError, match="complex"):
+            goldstein_filter(da)
+
+    def test_3d_input_raises(self):
+        da = xr.DataArray(
+            np.ones((3, 32, 32), dtype=np.complex64),
+            dims=["t", "y", "x"],
+        )
+        with pytest.raises(ValueError, match="2D"):
+            goldstein_filter(da)

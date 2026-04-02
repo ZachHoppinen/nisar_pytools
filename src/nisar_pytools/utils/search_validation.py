@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
+import numpy as np
 import pandas as pd
 from shapely.geometry import Point, Polygon, box
 from shapely.geometry.base import BaseGeometry
 
-import numpy as np
+log = logging.getLogger(__name__)
 
 NISAR_LAUNCH = pd.Timestamp("2024-02-03")
 
@@ -20,6 +23,9 @@ def validate_dates(
 ) -> tuple[pd.Timestamp, pd.Timestamp]:
     """Validate and normalize start/end dates for NISAR data search.
 
+    Timezone-aware inputs are converted to UTC before stripping the
+    timezone, ensuring consistent comparison.
+
     Parameters
     ----------
     start_date, end_date : str, datetime, or pd.Timestamp
@@ -28,7 +34,7 @@ def validate_dates(
     Returns
     -------
     (start, end) : tuple of pd.Timestamp
-        Normalized timestamps.
+        Normalized naive (UTC) timestamps.
 
     Raises
     ------
@@ -54,7 +60,7 @@ def _parse_date(
     date: str | datetime | pd.Timestamp | np.datetime64,
     param_name: str,
 ) -> pd.Timestamp:
-    """Parse a date input to pd.Timestamp."""
+    """Parse a date input to pd.Timestamp (naive UTC)."""
     try:
         if isinstance(date, pd.Timestamp):
             ts = date
@@ -65,7 +71,7 @@ def _parse_date(
         elif isinstance(date, str):
             ts = pd.to_datetime(date)
         else:
-            raise TypeError(
+            raise ValueError(
                 f"{param_name} must be str, datetime, or pd.Timestamp, "
                 f"got {type(date)}"
             )
@@ -75,15 +81,22 @@ def _parse_date(
     if pd.isna(ts):
         raise ValueError(f"{param_name} is NaT")
 
-    # Strip timezone for consistency
+    # Convert to UTC before stripping timezone to avoid offset errors
     if ts.tz is not None:
-        ts = ts.tz_localize(None)
+        ts = ts.tz_convert("UTC").tz_localize(None)
 
     return ts
 
 
 def validate_aoi(aoi) -> BaseGeometry:
     """Validate and normalize an area of interest.
+
+    Bounding box coordinates are expected in ``[xmin, ymin, xmax, ymax]``
+    order. Swapped min/max values are auto-corrected with a warning.
+
+    For geographic coordinates (used by ASF), valid ranges are
+    longitude [-180, 180] and latitude [-90, 90]. Coordinates outside
+    these ranges raise a ValueError.
 
     Parameters
     ----------
@@ -103,9 +116,8 @@ def validate_aoi(aoi) -> BaseGeometry:
     Raises
     ------
     ValueError
-        If AOI is empty, has zero area (for polygons), or cannot be parsed.
-    TypeError
-        If AOI type is not recognized.
+        If AOI is empty, has zero area, coordinates are out of range,
+        or cannot be parsed.
     """
     geom = None
 
@@ -115,8 +127,14 @@ def validate_aoi(aoi) -> BaseGeometry:
     elif isinstance(aoi, (list, tuple, np.ndarray)):
         if len(aoi) == 4:
             xmin, ymin, xmax, ymax = map(float, aoi)
+            if xmin > xmax or ymin > ymax:
+                log.warning(
+                    "AOI bounds appear swapped — auto-correcting. "
+                    "Expected [xmin, ymin, xmax, ymax]."
+                )
             xmin, xmax = sorted((xmin, xmax))
             ymin, ymax = sorted((ymin, ymax))
+            _check_geographic_bounds(xmin, ymin, xmax, ymax)
             geom = box(xmin, ymin, xmax, ymax)
         elif len(aoi) == 2:
             geom = Point(float(aoi[0]), float(aoi[1]))
@@ -134,13 +152,14 @@ def validate_aoi(aoi) -> BaseGeometry:
                 xmin, ymin, xmax, ymax = (float(aoi[k]) for k in keys)
                 xmin, xmax = sorted((xmin, xmax))
                 ymin, ymax = sorted((ymin, ymax))
+                _check_geographic_bounds(xmin, ymin, xmax, ymax)
                 geom = box(xmin, ymin, xmax, ymax)
                 break
         if geom is None:
             raise ValueError(f"AOI dict keys not recognized: {list(aoi.keys())}")
 
     else:
-        raise TypeError(f"AOI must be geometry, list/tuple, or dict; got {type(aoi)}")
+        raise ValueError(f"AOI must be geometry, list/tuple, or dict; got {type(aoi)}")
 
     if geom.is_empty:
         raise ValueError("AOI geometry is empty")
@@ -148,6 +167,19 @@ def validate_aoi(aoi) -> BaseGeometry:
         raise ValueError("AOI polygon has zero area")
 
     return geom
+
+
+def _check_geographic_bounds(
+    xmin: float, ymin: float, xmax: float, ymax: float
+) -> None:
+    """Warn if coordinates look like they're not in geographic (lon/lat) range."""
+    if xmin < -180 or xmax > 180 or ymin < -90 or ymax > 90:
+        log.warning(
+            "AOI bounds [%.1f, %.1f, %.1f, %.1f] are outside geographic "
+            "coordinate range (lon: -180..180, lat: -90..90). "
+            "ASF search expects geographic coordinates.",
+            xmin, ymin, xmax, ymax,
+        )
 
 
 def validate_urls(urls: list[str]) -> list[str]:
@@ -166,9 +198,7 @@ def validate_urls(urls: list[str]) -> list[str]:
     Raises
     ------
     ValueError
-        If list is empty or any URL is invalid.
-    TypeError
-        If any element is not a string.
+        If list is empty, any element is not a string, or any URL is invalid.
     """
     if not urls:
         raise ValueError("No URLs provided")
@@ -176,10 +206,11 @@ def validate_urls(urls: list[str]) -> list[str]:
     valid = []
     for u in urls:
         if not isinstance(u, str):
-            raise TypeError(f"URL must be a string, got {type(u)}")
+            raise ValueError(f"URL must be a string, got {type(u)}: {u}")
         url = u.strip()
-        if not (url.startswith("http://") or url.startswith("https://")):
-            raise ValueError(f"Invalid URL (must start with http/https): {url}")
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            raise ValueError(f"Invalid URL (must be http/https with host): {url}")
         valid.append(url)
 
     return valid
@@ -198,15 +229,19 @@ def validate_path(
         Input path.
     should_exist : bool or None
         If ``True``, path must exist. If ``False``, must not exist.
-        If ``None``, no check.
+        If ``None``, no check. Incompatible with ``make_directory=True``.
     make_directory : bool
         If ``True``, create the directory (and parents) if needed.
+        Cannot be used with ``should_exist=False``.
 
     Returns
     -------
     Path
         Normalized path.
     """
+    if should_exist is False and make_directory:
+        raise ValueError("should_exist=False and make_directory=True are contradictory")
+
     path = Path(filepath).expanduser()
 
     if should_exist is True and not path.exists():

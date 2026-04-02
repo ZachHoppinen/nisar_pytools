@@ -5,9 +5,13 @@ All functions operate on xarray DataArrays and preserve coordinates/CRS.
 
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 import xarray as xr
 from scipy.ndimage import gaussian_filter, uniform_filter
+
+log = logging.getLogger(__name__)
 
 
 def calculate_phase(data: xr.DataArray) -> xr.DataArray:
@@ -23,9 +27,10 @@ def calculate_phase(data: xr.DataArray) -> xr.DataArray:
     xr.DataArray
         Phase in radians (float32), same coordinates as input.
     """
-    phase = np.angle(data.values).astype(np.float32)
+    # Use np.angle directly on DataArray to preserve dask graphs if present
+    phase = np.angle(data)
     return xr.DataArray(
-        phase,
+        phase.values.astype(np.float32) if hasattr(phase, "values") else phase.astype(np.float32),
         dims=data.dims,
         coords=data.coords,
         name="phase",
@@ -33,16 +38,22 @@ def calculate_phase(data: xr.DataArray) -> xr.DataArray:
     )
 
 
-def _check_matching_grids(a: xr.DataArray, b: xr.DataArray) -> None:
-    """Raise ValueError if two DataArrays have mismatched x/y coordinates."""
-    if not np.array_equal(a.x.values, b.x.values):
+def _check_matching_grids(
+    a: xr.DataArray, b: xr.DataArray, rtol: float = 1e-9
+) -> None:
+    """Raise ValueError if two DataArrays have mismatched x/y coordinates.
+
+    Uses approximate comparison (``allclose``) to handle floating-point
+    rounding differences between processing paths.
+    """
+    if a.x.shape != b.x.shape or not np.allclose(a.x.values, b.x.values, rtol=rtol, atol=0):
         raise ValueError(
             f"x coordinates do not match: "
             f"shapes {a.x.shape} vs {b.x.shape}, "
             f"range [{a.x.values[0]}, {a.x.values[-1]}] vs "
             f"[{b.x.values[0]}, {b.x.values[-1]}]"
         )
-    if not np.array_equal(a.y.values, b.y.values):
+    if a.y.shape != b.y.shape or not np.allclose(a.y.values, b.y.values, rtol=rtol, atol=0):
         raise ValueError(
             f"y coordinates do not match: "
             f"shapes {a.y.shape} vs {b.y.shape}, "
@@ -69,8 +80,10 @@ def interferogram(slc1: xr.DataArray, slc2: xr.DataArray) -> xr.DataArray:
     Raises
     ------
     ValueError
-        If x or y coordinates do not match.
+        If x or y coordinates do not match, or inputs are not complex.
     """
+    if not np.iscomplexobj(slc1) or not np.iscomplexobj(slc2):
+        raise ValueError("SLC inputs must be complex-valued")
     _check_matching_grids(slc1, slc2)
     ifg = slc1 * np.conj(slc2)
     ifg.name = "interferogram"
@@ -88,6 +101,9 @@ def multilook(
     Averages non-overlapping blocks of ``(looks_y, looks_x)`` pixels.
     The output grid is downsampled accordingly, with coordinates
     taken from the block centers.
+
+    If the array dimensions are not exact multiples of the look factors,
+    the trailing rows/columns are trimmed (with a debug log message).
 
     Parameters
     ----------
@@ -108,18 +124,28 @@ def multilook(
     if looks_y == 1 and looks_x == 1:
         return data.copy()
 
-    arr = data.values
+    arr = np.asarray(data)
+    if arr.ndim != 2:
+        raise ValueError(f"multilook requires 2D input, got {arr.ndim}D")
+
     ny, nx = arr.shape
 
-    # Trim to exact multiples of the look factors
     ny_trim = (ny // looks_y) * looks_y
     nx_trim = (nx // looks_x) * looks_x
+
+    trimmed_y = ny - ny_trim
+    trimmed_x = nx - nx_trim
+    if trimmed_y > 0 or trimmed_x > 0:
+        log.debug(
+            "Trimming %d rows and %d columns for multilook (%d×%d)",
+            trimmed_y, trimmed_x, looks_y, looks_x,
+        )
+
     arr = arr[:ny_trim, :nx_trim]
 
-    # Reshape and average over the look windows
+    # Reshape and average — works for both real and complex dtypes
     out = arr.reshape(ny_trim // looks_y, looks_y, nx_trim // looks_x, looks_x).mean(axis=(1, 3))
 
-    # Downsample coordinates to block centers
     y_out = data.y.values[:ny_trim].reshape(-1, looks_y).mean(axis=1)
     x_out = data.x.values[:nx_trim].reshape(-1, looks_x).mean(axis=1)
 
@@ -144,6 +170,9 @@ def multilook_interferogram(
     Computes ``slc1 * conj(slc2)`` then averages over non-overlapping
     blocks of ``(looks_y, looks_x)`` pixels. Averaging the complex
     interferogram (rather than the phase) preserves coherence information.
+
+    This is a convenience wrapper around :func:`interferogram` +
+    :func:`multilook` that sets appropriate output metadata.
 
     Parameters
     ----------
@@ -187,8 +216,9 @@ def coherence(
     window_size : int
         For ``"boxcar"``: side length of the square averaging window.
         Must be odd and >= 1.
-        For ``"gaussian"``: used as the sigma (standard deviation) of the
-        Gaussian kernel in pixels.
+        For ``"gaussian"``: sigma (standard deviation) of the Gaussian
+        kernel in pixels. Note: the effective kernel radius is ~4×sigma,
+        so ``sigma=3`` gives an effective window of ~25 pixels.
     method : str
         Averaging method: ``"boxcar"`` (default) for uniform weighting,
         or ``"gaussian"`` for Gaussian-weighted averaging.
@@ -198,6 +228,8 @@ def coherence(
     xr.DataArray
         Coherence magnitude in [0, 1], same coordinates as inputs.
     """
+    if not np.iscomplexobj(slc1) or not np.iscomplexobj(slc2):
+        raise ValueError("SLC inputs must be complex-valued")
     _check_matching_grids(slc1, slc2)
 
     if method not in ("boxcar", "gaussian"):
@@ -210,8 +242,8 @@ def coherence(
         if window_size < 1:
             raise ValueError(f"window_size (sigma) must be >= 1, got {window_size}")
 
-    s1 = slc1.values
-    s2 = slc2.values
+    s1 = np.asarray(slc1)
+    s2 = np.asarray(slc2)
 
     ifg = s1 * np.conj(s2)
     pow1 = np.abs(s1) ** 2
@@ -222,6 +254,9 @@ def coherence(
             return uniform_filter(a, size=window_size)
         return gaussian_filter(a, sigma=window_size)
 
+    # scipy filters don't support complex input, so we average real and
+    # imaginary parts separately. This is mathematically equivalent since
+    # averaging is a linear operation.
     avg_ifg = _avg(ifg.real) + 1j * _avg(ifg.imag)
     avg_pow1 = _avg(pow1)
     avg_pow2 = _avg(pow2)
@@ -255,7 +290,8 @@ def unwrap(
     Parameters
     ----------
     igram : xr.DataArray
-        Complex interferogram (2D).
+        Complex interferogram (2D). SNAPHU accepts complex input
+        directly and extracts the wrapped phase internally.
     corr : xr.DataArray
         Coherence magnitude in [0, 1], same shape as ``igram``.
     nlooks : float
@@ -276,11 +312,13 @@ def unwrap(
     """
     import snaphu
 
-    mask_arr = mask.values if mask is not None else None
+    igram_vals = np.asarray(igram)
+    corr_vals = np.asarray(corr)
+    mask_arr = np.asarray(mask) if mask is not None else None
 
     unw_arr, conncomp_arr = snaphu.unwrap(
-        igram.values,
-        corr.values,
+        igram_vals,
+        corr_vals,
         nlooks,
         cost=cost,
         init=init,

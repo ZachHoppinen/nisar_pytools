@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
+from urllib.parse import urlparse
 
 import asf_search as asf
 
-from nisar_pytools.utils.validation import validate_nisar_hdf5  # noqa: F401 (re-export)
+from nisar_pytools.utils.search_validation import validate_aoi, validate_dates
 
 log = logging.getLogger(__name__)
 
@@ -22,6 +23,11 @@ PRODUCT_TYPES = {
     "ROFF": asf.PRODUCT_TYPE.ROFF,
     "GOFF": asf.PRODUCT_TYPE.GOFF,
 }
+
+
+def _url_filename(url: str) -> str:
+    """Extract the filename from a URL, stripping query strings."""
+    return urlparse(url).path.rsplit("/", 1)[-1]
 
 
 def find_nisar(
@@ -57,7 +63,9 @@ def find_nisar(
     direction : str, optional
         Flight direction: ``"ASCENDING"`` or ``"DESCENDING"``.
     max_results : int, optional
-        Maximum number of results to return.
+        Hint to ASF for maximum number of search results. Note that
+        post-search filtering (QA exclusion, .h5 filter) may reduce
+        the final count below this number.
     include_qa : bool
         If ``True``, include QA files (``_QA_STATS.h5``). Default ``False``.
 
@@ -65,14 +73,13 @@ def find_nisar(
     -------
     list of str
         Download URLs for matching ``.h5`` product files.
+        Returns an empty list if no results match.
 
     Raises
     ------
     ValueError
-        If product_type is not recognized or no results found.
+        If ``product_type`` or ``direction`` is not recognized.
     """
-    from nisar_pytools.utils.search_validation import validate_aoi, validate_dates
-
     aoi_geom = validate_aoi(aoi)
     start, end = validate_dates(start_date, end_date)
 
@@ -82,6 +89,16 @@ def find_nisar(
             f"Unknown product_type '{product_type}'. "
             f"Supported: {sorted(PRODUCT_TYPES.keys())}"
         )
+
+    # Validate direction before building search kwargs
+    if direction is not None:
+        direction_upper = direction.upper()
+        if direction_upper not in ("ASCENDING", "DESCENDING"):
+            raise ValueError(
+                f"direction must be 'ASCENDING' or 'DESCENDING', got '{direction}'"
+            )
+    else:
+        direction_upper = None
 
     search_kwargs = dict(
         platform=asf.PLATFORM.NISAR,
@@ -94,10 +111,7 @@ def find_nisar(
         search_kwargs["relativeOrbit"] = path_number
     if frame is not None:
         search_kwargs["frame"] = frame
-    if direction is not None:
-        direction_upper = direction.upper()
-        if direction_upper not in ("ASCENDING", "DESCENDING"):
-            raise ValueError(f"direction must be 'ASCENDING' or 'DESCENDING', got '{direction}'")
+    if direction_upper is not None:
         search_kwargs["flightDirection"] = direction_upper
     if max_results is not None:
         search_kwargs["maxResults"] = max_results
@@ -111,9 +125,10 @@ def find_nisar(
     urls = results.find_urls()
 
     # Filter to .h5 product files, optionally excluding QA
-    urls = [u for u in urls if u.endswith(".h5")]
+    # Use urlparse to handle URLs with query strings
+    urls = [u for u in urls if _url_filename(u).endswith(".h5")]
     if not include_qa:
-        urls = [u for u in urls if "_QA_" not in u.split("/")[-1]]
+        urls = [u for u in urls if "_QA_" not in _url_filename(u)]
 
     log.info("Found %d URLs after filtering", len(urls))
 

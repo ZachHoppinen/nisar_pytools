@@ -92,7 +92,7 @@ class TestValidateAOI:
             validate_aoi(empty)
 
     def test_wrong_type_raises(self):
-        with pytest.raises(TypeError, match="must be geometry"):
+        with pytest.raises(ValueError, match="must be geometry"):
             validate_aoi(42)
 
     def test_wrong_list_length_raises(self):
@@ -123,11 +123,11 @@ class TestValidateUrls:
             validate_urls([])
 
     def test_non_string_raises(self):
-        with pytest.raises(TypeError, match="must be a string"):
+        with pytest.raises(ValueError, match="must be a string"):
             validate_urls([123])
 
     def test_non_http_raises(self):
-        with pytest.raises(ValueError, match="must start with http"):
+        with pytest.raises(ValueError, match="must be http/https"):
             validate_urls(["ftp://example.com/a.h5"])
 
 

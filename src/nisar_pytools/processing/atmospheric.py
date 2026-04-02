@@ -6,9 +6,13 @@ corrections to unwrapped interferograms.
 
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 import xarray as xr
 from scipy.interpolate import RegularGridInterpolator
+
+log = logging.getLogger(__name__)
 
 
 def correct_troposphere(
@@ -25,6 +29,9 @@ def correct_troposphere(
     Interpolates the 3D hydrostatic and wet tropospheric phase screens
     from the GUNW radarGrid to the unwrapped phase grid using a DEM
     for the height axis, then subtracts the combined correction.
+
+    The hydrostatic and wet components are interpolated separately and
+    summed afterward to reduce peak memory usage.
 
     Parameters
     ----------
@@ -48,18 +55,15 @@ def correct_troposphere(
     xr.DataArray
         Corrected unwrapped phase with tropospheric contribution removed.
     """
-    tropo = hydrostatic + wet
-    tropo_interp = _interpolate_3d_to_2d(
-        tropo, heights, y_rg, x_rg, dem
-    )
+    _check_dem_grid(unwrapped_phase, dem)
+
+    # Interpolate separately to reduce peak memory
+    hydro_2d = _interpolate_3d_to_2d(hydrostatic, heights, y_rg, x_rg, dem)
+    wet_2d = _interpolate_3d_to_2d(wet, heights, y_rg, x_rg, dem)
+    tropo_interp = hydro_2d + wet_2d
 
     corrected = unwrapped_phase - tropo_interp
-
-    result = corrected.astype(np.float32)
-    result.name = unwrapped_phase.name
-    result.attrs = dict(unwrapped_phase.attrs)
-    result.attrs["tropospheric_correction"] = "applied"
-    return result
+    return _finalize_corrected(corrected, unwrapped_phase, "tropospheric_correction")
 
 
 def correct_ionosphere(
@@ -68,28 +72,34 @@ def correct_ionosphere(
 ) -> xr.DataArray:
     """Remove ionospheric phase from an unwrapped interferogram.
 
-    The ionosphere phase screen is on the same grid as the unwrapped
-    phase and is subtracted directly.
+    If the ionosphere screen has slightly different coordinates,
+    it is interpolated to the unwrapped phase grid before subtraction.
 
     Parameters
     ----------
     unwrapped_phase : xr.DataArray
         Unwrapped phase in radians.
     ionosphere_screen : xr.DataArray
-        Ionosphere phase screen in radians, same grid as the unwrapped phase.
+        Ionosphere phase screen in radians, same or similar grid as
+        the unwrapped phase.
 
     Returns
     -------
     xr.DataArray
         Corrected unwrapped phase with ionospheric contribution removed.
     """
-    corrected = unwrapped_phase - ionosphere_screen
+    # Align grids if coordinates don't match exactly
+    if not (
+        np.array_equal(unwrapped_phase.x.values, ionosphere_screen.x.values)
+        and np.array_equal(unwrapped_phase.y.values, ionosphere_screen.y.values)
+    ):
+        log.info("Interpolating ionosphere screen to unwrapped phase grid")
+        ionosphere_screen = ionosphere_screen.interp_like(
+            unwrapped_phase, method="linear"
+        )
 
-    result = corrected.astype(np.float32)
-    result.name = unwrapped_phase.name
-    result.attrs = dict(unwrapped_phase.attrs)
-    result.attrs["ionospheric_correction"] = "applied"
-    return result
+    corrected = unwrapped_phase - ionosphere_screen
+    return _finalize_corrected(corrected, unwrapped_phase, "ionospheric_correction")
 
 
 def correct_atmosphere(
@@ -136,28 +146,64 @@ def correct_atmosphere(
     return result
 
 
+def _finalize_corrected(
+    corrected: xr.DataArray,
+    source: xr.DataArray,
+    correction_key: str,
+) -> xr.DataArray:
+    """Apply consistent dtype, name, and attrs to a corrected DataArray."""
+    result = source.copy(data=corrected.values.astype(np.float32))
+    result.attrs[correction_key] = "applied"
+    return result
+
+
+def _check_dem_grid(phase: xr.DataArray, dem: xr.DataArray) -> None:
+    """Verify the DEM and unwrapped phase share the same grid."""
+    if phase.shape != dem.shape:
+        raise ValueError(
+            f"DEM shape {dem.shape} does not match unwrapped phase shape {phase.shape}. "
+            f"Reproject or resample the DEM to match the unwrapped phase grid."
+        )
+
+
 def _interpolate_3d_to_2d(
     data_3d: np.ndarray,
     heights: np.ndarray,
     y_rg: np.ndarray,
     x_rg: np.ndarray,
     dem: xr.DataArray,
-) -> np.ndarray:
-    """Interpolate a 3D (height, y, x) field to a 2D grid using DEM elevations."""
+) -> xr.DataArray:
+    """Interpolate a 3D (height, y, x) field to a 2D grid using DEM elevations.
+
+    Returns an xr.DataArray with the DEM's coordinates so that xarray
+    alignment works correctly when subtracting from the unwrapped phase.
+    """
     dem_x = dem.x.values
     dem_y = dem.y.values
     dem_elev = dem.values
 
-    # RegularGridInterpolator needs ascending axes
-    y_sorted = y_rg if y_rg[0] < y_rg[-1] else y_rg[::-1]
-    flip_y = y_rg[0] > y_rg[-1]
+    # Make working copies for sorting
+    data = data_3d.copy()
+    h = heights.copy()
+    y = y_rg.copy()
+    x = x_rg.copy()
 
-    if flip_y:
-        data_3d = data_3d[:, ::-1, :]
+    # RegularGridInterpolator requires all axes strictly ascending
+    if h[0] > h[-1]:
+        h = h[::-1]
+        data = data[::-1, :, :]
+
+    if y[0] > y[-1]:
+        y = y[::-1]
+        data = data[:, ::-1, :]
+
+    if x[0] > x[-1]:
+        x = x[::-1]
+        data = data[:, :, ::-1]
 
     interp = RegularGridInterpolator(
-        (heights, y_sorted, x_rg),
-        data_3d,
+        (h, y, x),
+        data,
         method="linear",
         bounds_error=False,
         fill_value=np.nan,
@@ -167,4 +213,17 @@ def _interpolate_3d_to_2d(
     pts = np.column_stack([dem_elev.ravel(), yy.ravel(), xx.ravel()])
     result = interp(pts).reshape(dem_elev.shape)
 
-    return result
+    # Warn if significant fraction of pixels are NaN from extrapolation
+    nan_frac = np.isnan(result).sum() / result.size
+    if nan_frac > 0.05:
+        log.warning(
+            "%.1f%% of interpolated pixels are NaN (outside radarGrid extent)",
+            nan_frac * 100,
+        )
+
+    return xr.DataArray(
+        result,
+        dims=dem.dims,
+        coords=dem.coords,
+        attrs={"units": "radians"},
+    )

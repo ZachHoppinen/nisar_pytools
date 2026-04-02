@@ -2,14 +2,25 @@
 
 Local incidence angle is the angle between the radar line-of-sight vector
 (target-to-sensor) and the local surface normal derived from a DEM.
+
+.. note::
+    The DEM must be in a **projected CRS** (metres) for the surface normal
+    computation to be physically correct. Geographic CRS (degrees) will
+    produce wrong normals because the gradient mixes elevation (metres)
+    with horizontal (degrees). Reproject to UTM first if needed.
 """
 
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 import rioxarray  # noqa: F401 — registers .rio accessor
 import xarray as xr
-from scipy.interpolate import RegularGridInterpolator
+
+from nisar_pytools.processing.atmospheric import _interpolate_3d_to_2d
+
+log = logging.getLogger(__name__)
 
 
 def compute_surface_normal(
@@ -20,6 +31,8 @@ def compute_surface_normal(
     Uses ``np.gradient`` on the elevation to get slope in x and y,
     then constructs and normalizes the surface normal in an
     east-north-up (ENU) frame: ``n = (-dz/dx, -dz/dy, 1)``.
+
+    The DEM must be in a projected CRS (metres) for correct results.
 
     Parameters
     ----------
@@ -36,12 +49,12 @@ def compute_surface_normal(
     x = dem.x.values
     y = dem.y.values
 
-    dx = np.abs(x[1] - x[0])
-    dy = np.abs(y[1] - y[0])
+    # Use signed spacing so gradient handles both ascending and descending y
+    dy_signed = y[1] - y[0]  # negative if descending, positive if ascending
+    dx_signed = x[1] - x[0]
 
     # np.gradient: axis 0 = y (rows), axis 1 = x (cols)
-    # Negate dy because y is typically descending (north-to-south)
-    dz_dy, dz_dx = np.gradient(elev, -dy, dx)
+    dz_dy, dz_dx = np.gradient(elev, dy_signed, dx_signed)
 
     nx = -dz_dx
     ny = -dz_dy
@@ -66,9 +79,8 @@ def interpolate_los_to_dem(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Interpolate 3D LOS vectors from the radar grid to the DEM grid.
 
-    The LOS vectors are defined on a ``(height, y, x)`` grid. This function
-    interpolates them to the DEM pixel locations using the DEM elevation
-    for the height axis.
+    Uses the shared ``_interpolate_3d_to_2d`` utility which handles
+    monotonicity sorting for all three axes (height, y, x).
 
     Parameters
     ----------
@@ -86,29 +98,10 @@ def interpolate_los_to_dem(
     los_e, los_n, los_u : np.ndarray
         Interpolated LOS components on the DEM grid (east, north, up).
     """
-    dem_x = dem.x.values
-    dem_y = dem.y.values
-    dem_elev = dem.values
-
-    # RegularGridInterpolator requires ascending axes
-    y_sorted = y_rg if y_rg[0] < y_rg[-1] else y_rg[::-1]
-    flip_y = y_rg[0] > y_rg[-1]
-
-    yy, xx = np.meshgrid(dem_y, dem_x, indexing="ij")
-    pts = np.column_stack([dem_elev.ravel(), yy.ravel(), xx.ravel()])
-
     results = {}
     for name, data in [("x", los_x), ("y", los_y), ("z", los_z)]:
-        if flip_y:
-            data = data[:, ::-1, :]
-        interp = RegularGridInterpolator(
-            (heights, y_sorted, x_rg),
-            data,
-            method="linear",
-            bounds_error=False,
-            fill_value=np.nan,
-        )
-        results[name] = interp(pts).reshape(dem_elev.shape)
+        interp_da = _interpolate_3d_to_2d(data, heights, y_rg, x_rg, dem)
+        results[name] = np.asarray(interp_da)
 
     return results["x"], results["y"], results["z"]
 
@@ -129,7 +122,7 @@ def local_incidence_angle(
     ----------
     dem : xr.DataArray
         2D elevation DataArray with ``x`` and ``y`` coordinates.
-        Should be in the same CRS as the LOS grid.
+        Must be in a **projected CRS** (metres) matching the LOS grid.
     los_x, los_y, los_z : np.ndarray
         LOS unit vector components (east, north, up),
         shape ``(n_heights, n_y, n_x)``.
@@ -145,6 +138,15 @@ def local_incidence_angle(
     xr.DataArray
         Local incidence angle in degrees on the DEM grid.
     """
+    # Validate LOS vectors are approximately unit length
+    los_mag = np.sqrt(los_x**2 + los_y**2 + los_z**2)
+    if not np.allclose(los_mag[np.isfinite(los_mag)], 1.0, atol=0.05):
+        log.warning(
+            "LOS vectors are not unit length (mean magnitude: %.3f). "
+            "Results may be inaccurate.",
+            np.nanmean(los_mag),
+        )
+
     nx, ny, nz = compute_surface_normal(dem)
     los_e, los_n, los_u = interpolate_los_to_dem(
         dem, los_x, los_y, los_z, heights, x_rg, y_rg
@@ -162,9 +164,13 @@ def local_incidence_angle(
         attrs={"units": "degrees", "long_name": "Local incidence angle"},
     )
 
-    crs = epsg if epsg is not None else dem.rio.crs
-    if crs is not None:
-        lia_da = lia_da.rio.write_crs(crs)
+    # Normalize CRS type
+    if epsg is not None:
+        lia_da = lia_da.rio.write_crs(int(epsg))
+    elif dem.rio.crs is not None:
+        lia_da = lia_da.rio.write_crs(dem.rio.crs)
+
+    if lia_da.rio.crs is not None:
         lia_da = lia_da.rio.set_spatial_dims(x_dim="x", y_dim="y")
 
     return lia_da

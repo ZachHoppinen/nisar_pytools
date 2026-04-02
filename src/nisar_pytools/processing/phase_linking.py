@@ -4,6 +4,12 @@ Estimates consistent phase histories from a stack of co-registered SLC images
 by identifying statistically homogeneous pixels (SHP) and solving for the
 optimal phase using the minimum eigenvector of the whitened coherence matrix.
 
+.. warning::
+    The ``phase_link`` function uses a per-pixel Python loop and is **not
+    suitable for full-resolution processing** of large scenes. It is intended
+    for small subsets or prototyping. A vectorized implementation using
+    batched FFT/window extraction would be needed for production use.
+
 Reference:
     Ansari, H., De Zan, F., & Bamler, R. (2018). Efficient Phase Estimation
     for Interferogram Stacks. IEEE TGRS, 56(7), 4109-4125.
@@ -11,14 +17,26 @@ Reference:
 
 from __future__ import annotations
 
+import logging
+import warnings
+
 import numpy as np
 import scipy.ndimage
 import scipy.stats
 import xarray as xr
 
+log = logging.getLogger(__name__)
+
 
 def estimate_coherence_matrix(slc_pixels: np.ndarray) -> np.ndarray:
     """Estimate the sample coherence matrix from SLC pixel samples.
+
+    Computes the sample correlation matrix:
+    ``C[i,j] = (Σ s_i * s_j*) / sqrt(Σ|s_i|² · Σ|s_j|²)``
+
+    This is a vector-norm normalization (not per-pixel-pair). For SHP-based
+    phase linking this is standard practice, as the SHP set is already
+    filtered for statistical homogeneity.
 
     Parameters
     ----------
@@ -40,9 +58,10 @@ def estimate_coherence_matrix(slc_pixels: np.ndarray) -> np.ndarray:
 def emi(coherence_matrix: np.ndarray) -> np.ndarray:
     """Estimate linked phases using the EMI algorithm.
 
-    Computes the whitened matrix ``W = inv(|C|) * C``, finds
-    the eigenvector corresponding to the minimum eigenvalue,
-    and extracts relative phases referenced to the first image.
+    Computes the whitened matrix ``W = inv(|C|) ⊙ C`` (Hadamard product),
+    finds the eigenvector corresponding to the minimum eigenvalue using
+    ``eigh`` (Hermitian eigendecomposition), and extracts relative phases
+    referenced to the first image.
 
     Parameters
     ----------
@@ -62,14 +81,21 @@ def emi(coherence_matrix: np.ndarray) -> np.ndarray:
 
     # Hadamard (elementwise) product: inv(|C|) ⊙ C
     W = np.linalg.inv(abs_C_reg) * C
-    eigenvalues, eigenvectors = np.linalg.eig(W)
 
+    # Force Hermitian (numerical noise can break symmetry)
+    W = (W + W.T.conj()) / 2
+
+    # eigh for Hermitian matrices: numerically stable, real eigenvalues
+    eigenvalues, eigenvectors = np.linalg.eigh(W)
+
+    # EMI selects the eigenvector with eigenvalue closest to zero
+    # in magnitude — this corresponds to the signal subspace
     min_idx = np.argmin(np.abs(eigenvalues))
     min_eigvec = eigenvectors[:, min_idx]
 
     # Extract phases relative to first image
     phases = np.angle(min_eigvec * min_eigvec[0].conj())
-    return phases.real.astype(np.float32)
+    return phases.astype(np.float32)
 
 
 def identify_shp(
@@ -80,16 +106,19 @@ def identify_shp(
     """Identify statistically homogeneous pixels using a GLRT test.
 
     Compares the amplitude variance at each pixel against a reference
-    pixel's variance using a generalized likelihood ratio test.
+    pixel's variance using a generalized likelihood ratio test for
+    equal means of exponential distributions.
 
     Parameters
     ----------
     amplitude_variance : xr.DataArray
-        Per-pixel amplitude variance (2D).
+        Per-pixel amplitude variance (2D), computed as
+        ``sum(|s|²) / (2 * n_images)`` over the temporal stack.
     ref_variance : xr.DataArray
-        Amplitude variance at the reference pixel (scalar or broadcastable).
+        Amplitude variance at the reference pixel (scalar).
     threshold : float
-        GLRT threshold. Pixels with test statistic below this are SHP.
+        GLRT threshold (derived from chi2 distribution). Pixels with
+        test statistic below this are classified as SHP.
 
     Returns
     -------
@@ -114,15 +143,21 @@ def phase_link(
     a spatial window using a GLRT test, estimates the coherence matrix from
     those pixels, and applies the EMI algorithm to recover consistent phases.
 
+    .. warning::
+        This function uses a per-pixel Python loop and is **not suitable
+        for full-resolution scenes**. For a 100×100 subset it runs in
+        seconds; for 1000×1000 it may take hours. Use on small subsets
+        or for prototyping only.
+
     Parameters
     ----------
     slc_stack : xr.DataArray
         3D complex SLC stack with dimensions ``(time, y, x)``.
-        The ``time`` dimension indexes acquisitions.
+        Must be in-memory (not dask-backed). Call ``.compute()`` first
+        if needed.
     window_size : int
-        Half-width of the spatial search window in coordinate units.
-        The full window is ``2 * window_size + 1`` pixels if pixel spacing
-        is 1, but selection is done via coordinate slicing.
+        Half-width of the spatial search window in pixels.
+        The full window is ``2 * window_size + 1`` pixels.
     confidence : float
         Confidence level for the GLRT SHP test (default 0.95).
 
@@ -135,76 +170,69 @@ def phase_link(
         Coherence of the first image with all others from the coherence
         matrix, shape ``(time, y, x)``.
     """
-    n_images = slc_stack.sizes["time"]
-    y_vals = slc_stack.y.values
-    x_vals = slc_stack.x.values
-    ny = len(y_vals)
-    nx = len(x_vals)
+    # Ensure in-memory numpy data
+    stack_data = np.asarray(slc_stack)
+    if stack_data.ndim != 3:
+        raise ValueError(f"slc_stack must be 3D (time, y, x), got {stack_data.ndim}D")
+
+    n_images, ny, nx = stack_data.shape
+
+    if ny * nx > 10000:
+        warnings.warn(
+            f"Phase linking {ny}×{nx} = {ny*nx} pixels with a per-pixel loop. "
+            f"This will be slow. Consider subsetting first.",
+            UserWarning,
+            stacklevel=2,
+        )
 
     # Precompute GLRT threshold and amplitude variance
     gamma = scipy.stats.chi2.ppf(confidence, df=1) / (2 * n_images)
-    amp_variance = (np.abs(slc_stack) ** 2).sum("time") / (2 * n_images)
-
-    # Determine pixel spacing for window indexing
-    dx = np.abs(x_vals[1] - x_vals[0]) if nx > 1 else 1.0
-    dy = np.abs(y_vals[1] - y_vals[0]) if ny > 1 else 1.0
-    half_x = window_size * dx
-    half_y = window_size * dy
+    amp_var = np.sum(np.abs(stack_data) ** 2, axis=0) / (2 * n_images)
 
     # Output arrays
-    linked_data = np.zeros((n_images, ny, nx), dtype=np.complex64)
-    coh_data = np.zeros((n_images, ny, nx), dtype=np.float32)
+    linked_data = np.zeros_like(stack_data)
+    coh_data = np.zeros_like(stack_data, dtype=np.float32)
 
     # Connected component structure for 8-connectivity
     struct = np.ones((3, 3), dtype=int)
 
     for iy in range(ny):
-        y = y_vals[iy]
-        # Slice the y window once per row
-        if y_vals[0] < y_vals[-1]:  # ascending
-            y_slice = slice(y - half_y, y + half_y)
-        else:  # descending
-            y_slice = slice(y + half_y, y - half_y)
-
         for ix in range(nx):
-            x = x_vals[ix]
+            # Window bounds (index-based, not coordinate-based)
+            y0 = max(0, iy - window_size)
+            y1 = min(ny, iy + window_size + 1)
+            x0 = max(0, ix - window_size)
+            x1 = min(nx, ix + window_size + 1)
 
-            # Extract spatial window
-            window = slc_stack.sel(
-                x=slice(x - half_x, x + half_x),
-                y=y_slice,
-            )
-            var_window = amp_variance.sel(
-                x=slice(x - half_x, x + half_x),
-                y=y_slice,
-            )
+            # Extract window
+            window = stack_data[:, y0:y1, x0:x1]  # (n_images, wy, wx)
+            var_window = amp_var[y0:y1, x0:x1]  # (wy, wx)
 
-            if window.sizes["y"] == 0 or window.sizes["x"] == 0:
-                continue
+            # Reference pixel position within window
+            ref_iy = iy - y0
+            ref_ix = ix - x0
+            ref_var = amp_var[iy, ix]
 
             # SHP identification via GLRT
-            ref_var = amp_variance.sel(x=x, y=y, method="nearest")
-            shp_mask = identify_shp(var_window, ref_var, gamma)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                T = 2 * np.log((ref_var + var_window) / 2) - np.log(ref_var) - np.log(var_window)
+            shp_mask = T < gamma
 
             # 8-connected component containing the reference pixel
-            labeled, _ = scipy.ndimage.label(shp_mask.values, structure=struct)
-            labeled_da = xr.DataArray(labeled, coords=shp_mask.coords, dims=shp_mask.dims)
-            ref_label = labeled_da.sel(x=x, y=y, method="nearest").item()
+            labeled, _ = scipy.ndimage.label(shp_mask, structure=struct)
+            ref_label = labeled[ref_iy, ref_ix]
 
             if ref_label == 0:
-                # Reference pixel not in any SHP region — use just itself
-                pixel_vals = slc_stack.sel(x=x, y=y, method="nearest").values
-                linked_data[:, iy, ix] = pixel_vals
+                linked_data[:, iy, ix] = stack_data[:, iy, ix]
                 continue
 
-            connected_mask = labeled_da.values == ref_label
+            connected_mask = labeled == ref_label
 
-            # Extract SHP pixels: (n_images, n_shp_pixels)
-            pixels = window.values[:, connected_mask]
+            # Extract SHP pixels: (n_images, n_shp)
+            pixels = window[:, connected_mask]
 
             if pixels.shape[1] < 2:
-                pixel_vals = slc_stack.sel(x=x, y=y, method="nearest").values
-                linked_data[:, iy, ix] = pixel_vals
+                linked_data[:, iy, ix] = stack_data[:, iy, ix]
                 continue
 
             # Coherence matrix and EMI

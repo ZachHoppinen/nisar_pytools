@@ -38,9 +38,14 @@ class TestOpenNisar:
         assert "y" in freq_a.coords
 
     def test_file_handle_kept_alive(self, gslc_h5):
+        from nisar_pytools.io.reader import _open_files
+
         dt = open_nisar(gslc_h5)
-        h5file = dt.__dict__["_h5file"]
-        assert h5file.id.valid
+        # File handle should be in the module-level set
+        assert len(_open_files) >= 1
+        # The lazy data should be computable (file is open)
+        freq_a = dt["science/LSAR/GSLC/grids/frequencyA"].dataset
+        _ = freq_a["HH"].values
 
     def test_invalid_path_raises(self):
         with pytest.raises(FileNotFoundError):
