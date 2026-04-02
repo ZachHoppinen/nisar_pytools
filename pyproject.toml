@@ -80,5 +80,5 @@ markers = [
     "integration: marks tests requiring real NISAR files (deselect with '-m \"not integration\"')",
 ]
 filterwarnings = [
-    "ignore::zarr.core.common.ZarrUserWarning",
+    "ignore:Consolidated metadata:UserWarning",
 ]
