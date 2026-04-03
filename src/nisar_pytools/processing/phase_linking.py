@@ -75,12 +75,22 @@ def emi(coherence_matrix: np.ndarray) -> np.ndarray:
     """
     C = coherence_matrix
     abs_C = np.abs(C)
+    n = C.shape[0]
 
-    # Regularize to avoid singular matrix
-    abs_C_reg = abs_C + np.eye(C.shape[0]) * 1e-10
+    # Regularize and invert |C| via Cholesky factorization
+    # (more numerically stable than direct inversion)
+    abs_C_reg = abs_C + np.eye(n) * 1e-6
+    try:
+        from scipy.linalg import cho_factor, cho_solve
+
+        cho, low = cho_factor(abs_C_reg)
+        abs_C_inv = cho_solve((cho, low), np.eye(n))
+    except np.linalg.LinAlgError:
+        # Fallback to direct inversion if Cholesky fails
+        abs_C_inv = np.linalg.inv(abs_C_reg)
 
     # Hadamard (elementwise) product: inv(|C|) ⊙ C
-    W = np.linalg.inv(abs_C_reg) * C
+    W = abs_C_inv * C
 
     # Force Hermitian (numerical noise can break symmetry)
     W = (W + W.T.conj()) / 2
@@ -107,7 +117,13 @@ def identify_shp(
 
     Compares the amplitude variance at each pixel against a reference
     pixel's variance using a generalized likelihood ratio test for
-    equal means of exponential distributions.
+    equal means of exponential distributions (Parizzi et al. 2011).
+
+    The test statistic is ``T = 2*ln((p+σ)/2) - ln(p) - ln(σ)``
+    and the threshold is ``chi2.ppf(confidence, df=1) / (2*n_images)``.
+    This is equivalent to dolphin/MiaplPy's formulation where the
+    test statistic is multiplied by ``n_images`` and compared to an
+    unscaled chi2 quantile.
 
     Parameters
     ----------

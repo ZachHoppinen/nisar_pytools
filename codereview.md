@@ -175,6 +175,34 @@ coordinate lookups) multiplied by ny×nx iterations, not the per-pixel math.
 **Alternative**: Use MiaplPy or DOLPHIN (both implement vectorized phase linking
 for InSAR time series) and call from nisar_pytools as an optional dependency.
 
+## Dolphin Comparison (Phase Linking)
+
+Compared our phase linking against ISCE-framework/dolphin (the reference
+implementation for NISAR InSAR time series).
+
+**Coherence matrix**: Mathematically equivalent. Both compute
+`C[i,j] = (Σ s_i * s_j*) / sqrt(Σ|s_i|² · Σ|s_j|²)`. Dolphin uses
+power-sum form, we use L2-norm — same result.
+
+**EMI eigenvalue selection**: Dolphin uses shift-inverse iteration with
+`mu=0.99` (targets eigenvalue closest to 1). We use `argmin(abs(eigenvalues))`
+which selects eigenvalue closest to 0. In practice both converge to the
+same eigenvector for well-conditioned matrices (our test case: eigenvalue =
+1.0009). For ill-conditioned cases, dolphin's approach is more robust.
+
+**GLRT threshold**: Mathematically equivalent but expressed differently.
+- Ours: `T < chi2.ppf(conf, df=1) / (2*N)`
+- Dolphin: `N * T < chi2.ppf(1-alpha, df=1)`
+Same comparison rearranged. Both match Parizzi et al. 2011.
+
+**Regularization**: Improved from 1e-10 jitter to Cholesky factorization
+with 1e-6 jitter (matching dolphin's approach). Falls back to direct
+inversion if Cholesky fails.
+
+**Performance**: Dolphin uses JAX vmap for vectorized processing. Our
+per-pixel loop is correct but orders of magnitude slower. Production
+use should call dolphin as an optional dependency.
+
 ## RSLC Notes
 
 - RSLC available at `local/rslc/` (same acquisition as GSLC: track 77, frame 24, 2025-11-03)
