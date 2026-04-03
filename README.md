@@ -50,8 +50,27 @@ conda activate nisar_pytools
 ```python
 from nisar_pytools import find_nisar, download_urls
 
-# Search ASF for GSLC products over an area of interest
-urls = find_nisar(
+# find_nisar() searches ASF for NISAR products. Parameters:
+#   aoi          - area of interest: [xmin, ymin, xmax, ymax], shapely geometry,
+#                  or dict like {"west": -115, "south": 43, "east": -114, "north": 44}
+#   start_date   - start of temporal search window (ISO string or datetime)
+#   end_date     - end of temporal search window
+#   product_type - "GSLC", "GUNW", "RSLC", "GCOV", "RIFG", "RUNW", "ROFF", "GOFF"
+#   path_number  - relative orbit / track number (optional)
+#   frame        - frame number (optional)
+#   direction    - "ASCENDING" or "DESCENDING" (optional)
+#   include_qa   - if True, include QA files (default False)
+
+# Broad search: find all GSLC data over an area (any track, any direction)
+all_gslcs = find_nisar(
+    aoi=[-115, 43, -114, 44],
+    start_date="2025-06-01",
+    end_date="2025-12-01",
+    product_type="GSLC",
+)
+
+# Narrow search: specific track and direction for time-series analysis
+track_77 = find_nisar(
     aoi=[-115, 43, -114, 44],
     start_date="2025-06-01",
     end_date="2025-12-01",
@@ -60,23 +79,38 @@ urls = find_nisar(
     direction="ASCENDING",
 )
 
-# Download in parallel with automatic validation
-fps = download_urls(urls, "local/gslcs/")
+# Search for GUNW interferograms instead of SLCs
+gunws = find_nisar(
+    aoi=[-115, 43, -114, 44],
+    start_date="2025-11-01",
+    end_date="2026-02-01",
+    product_type="GUNW",
+)
+
+# Download in parallel with automatic HDF5 validation
+fps = download_urls(track_77, "local/gslcs/")
 ```
 
 ### Read a Single File
 
 ```python
 from nisar_pytools import open_nisar
+from nisar_pytools.utils.metadata import get_slc, get_orbit_info, get_acquisition_time
 
 dt = open_nisar("NISAR_L2_PR_GSLC_...h5")
 
-# Access a frequency/polarization group
-freq_a = dt["science/LSAR/GSLC/grids/frequencyA"].dataset
-hh = freq_a["HH"]  # lazy dask-backed DataArray with CRS set
+# Quick access to a polarization channel
+hh = get_slc(dt, polarization="HH")           # lazy, CRS set
+hv = get_slc(dt, polarization="HV")
+hh_b = get_slc(dt, polarization="HH", frequency="frequencyB")
 
-# Coordinates and CRS are assigned automatically
-print(hh.rio.crs)  # e.g. EPSG:32611
+# Metadata without navigating the tree
+print(get_acquisition_time(dt))  # 2025-11-03 12:46:15
+print(get_orbit_info(dt))        # {'track_number': 77, 'frame_number': 24, ...}
+print(hh.rio.crs)                # EPSG:32611
+
+# Or access the full DataTree directly
+freq_a = dt["science/LSAR/GSLC/grids/frequencyA"].dataset
 ```
 
 ### Stack GSLCs into a Time Series
@@ -119,15 +153,29 @@ unw, conncomp = unwrap(ifg, coh, nlooks=20.0)
 from nisar_pytools.processing import phase_link
 
 # EMI phase linking on a GSLC stack
-linked, temporal_coh = phase_link(stack, window_size=11, confidence=0.95)
+linked, temporal_coh = phase_link(stack, search_window=11, confidence=0.95)
 ```
 
 ### Polarimetric Decomposition
 
+Requires a **quad-pol acquisition** (HH + HV + VV). NISAR acquires quad-pol
+over specific regions — check `listOfPolarizations` in the frequency group
+to confirm your data has all three channels. Dual-pol (HH + HV only) data
+cannot be used for H-A-alpha decomposition.
+
 ```python
+from nisar_pytools import open_nisar
+from nisar_pytools.utils.metadata import get_slc
 from nisar_pytools.processing import h_a_alpha
 
-# H-A-alpha decomposition from quad-pol SLC channels
+dt = open_nisar("NISAR_L2_PR_GSLC_...h5")
+
+# Extract the three quad-pol channels (must call .compute() for in-memory)
+hh = get_slc(dt, "HH").compute()
+hv = get_slc(dt, "HV").compute()
+vv = get_slc(dt, "VV").compute()  # only available in quad-pol mode
+
+# H-A-alpha decomposition (Cloude-Pottier)
 ds = h_a_alpha(hh, hv, vv)
 # Returns Dataset with: entropy, anisotropy, alpha, mean_alpha
 ```

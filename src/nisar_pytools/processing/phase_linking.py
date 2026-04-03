@@ -150,7 +150,7 @@ def identify_shp(
 
 def phase_link(
     slc_stack: xr.DataArray,
-    window_size: int = 11,
+    search_window: int = 11,
     confidence: float = 0.95,
 ) -> tuple[xr.DataArray, xr.DataArray]:
     """Phase link a stack of SLC images using EMI with SHP selection.
@@ -171,9 +171,9 @@ def phase_link(
         3D complex SLC stack with dimensions ``(time, y, x)``.
         Must be in-memory (not dask-backed). Call ``.compute()`` first
         if needed.
-    window_size : int
+    search_window : int
         Half-width of the spatial search window in pixels.
-        The full window is ``2 * window_size + 1`` pixels.
+        The full window is ``2 * search_window + 1`` pixels.
     confidence : float
         Confidence level for the GLRT SHP test (default 0.95).
 
@@ -215,10 +215,10 @@ def phase_link(
     for iy in range(ny):
         for ix in range(nx):
             # Window bounds (index-based, not coordinate-based)
-            y0 = max(0, iy - window_size)
-            y1 = min(ny, iy + window_size + 1)
-            x0 = max(0, ix - window_size)
-            x1 = min(nx, ix + window_size + 1)
+            y0 = max(0, iy - search_window)
+            y1 = min(ny, iy + search_window + 1)
+            x0 = max(0, ix - search_window)
+            x1 = min(nx, ix + search_window + 1)
 
             # Extract window
             window = stack_data[:, y0:y1, x0:x1]  # (n_images, wy, wx)

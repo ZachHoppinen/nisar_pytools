@@ -132,19 +132,19 @@ class TestIdentifySHP:
 class TestPhaseLink:
     def test_output_shapes(self):
         stack, _ = _make_slc_stack(n_images=4, ny=6, nx=6)
-        linked, coh = phase_link(stack, window_size=3)
+        linked, coh = phase_link(stack, search_window=3)
         assert linked.shape == stack.shape
         assert coh.shape == stack.shape
         assert linked.dims == ("time", "y", "x")
 
     def test_output_is_complex(self):
         stack, _ = _make_slc_stack(n_images=4, ny=6, nx=6)
-        linked, _ = phase_link(stack, window_size=3)
+        linked, _ = phase_link(stack, search_window=3)
         assert np.iscomplexobj(linked.values)
 
     def test_coords_preserved(self):
         stack, _ = _make_slc_stack(n_images=4, ny=6, nx=6)
-        linked, coh = phase_link(stack, window_size=3)
+        linked, coh = phase_link(stack, search_window=3)
         np.testing.assert_array_equal(linked.x.values, stack.x.values)
         np.testing.assert_array_equal(linked.y.values, stack.y.values)
         np.testing.assert_array_equal(linked.time.values, stack.time.values)
@@ -152,7 +152,7 @@ class TestPhaseLink:
     def test_recovers_phase_trend(self):
         """Phase-linked output should preserve the linear phase ramp."""
         stack, true_phases = _make_slc_stack(n_images=5, ny=8, nx=8, seed=0)
-        linked, _ = phase_link(stack, window_size=4)
+        linked, _ = phase_link(stack, search_window=4)
 
         # Extract phase at center pixel
         center_y = stack.y.values[4]
@@ -167,6 +167,6 @@ class TestPhaseLink:
 
     def test_names_and_attrs(self):
         stack, _ = _make_slc_stack(n_images=3, ny=6, nx=6)
-        linked, coh = phase_link(stack, window_size=3)
+        linked, coh = phase_link(stack, search_window=3)
         assert linked.name == "phase_linked"
         assert coh.name == "temporal_coherence"
