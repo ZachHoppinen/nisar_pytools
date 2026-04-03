@@ -135,9 +135,27 @@ ds = h_a_alpha(hh, hv, vv)
 ### Local Incidence Angle
 
 ```python
+import numpy as np
+from nisar_pytools import open_nisar
 from nisar_pytools.utils.local_incidence_angle import local_incidence_angle
 
-lia = local_incidence_angle(dem, los_x, los_y, los_z, heights, x_rg, y_rg, epsg=32611)
+# Open a GSLC or GUNW — both have radarGrid with LOS vectors
+dt = open_nisar("NISAR_L2_PR_GSLC_...h5")
+
+# Extract LOS vectors from the radarGrid metadata
+rg = dt["science/LSAR/GSLC/metadata/radarGrid"].dataset
+los_x = np.asarray(rg["losUnitVectorX"])  # shape: (n_heights, ny, nx)
+los_y = np.asarray(rg["losUnitVectorY"])
+los_z = np.sqrt(np.maximum(1.0 - los_x**2 - los_y**2, 0.0))  # derive Z
+
+heights = np.asarray(rg.coords["z"])      # height layers
+x_rg = np.asarray(rg.coords["x"])         # radarGrid x coordinates
+y_rg = np.asarray(rg.coords["y"])         # radarGrid y coordinates
+epsg = int(rg.attrs.get("projection"))     # CRS
+
+# Compute LIA using a DEM (must be in projected CRS, same as radarGrid)
+lia = local_incidence_angle(dem, los_x, los_y, los_z, heights, x_rg, y_rg, epsg=epsg)
+# lia is an xr.DataArray in degrees with CRS set
 ```
 
 ## Roadmap
