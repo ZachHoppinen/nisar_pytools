@@ -129,7 +129,7 @@ stack = stack_gslcs(
 # Sorted by time, grid-validated, dask-backed, CRS assigned
 ```
 
-### SAR Processing
+### Basic SAR Processing
 
 ```python
 from nisar_pytools.processing import (
