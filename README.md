@@ -31,6 +31,7 @@ pip install nisar-pytools
 With optional extras:
 ```sh
 pip install nisar-pytools[dem]       # DEM fetching (dem_stitcher)
+pip install nisar-pytools[dolphin]   # dolphin InSAR time-series prep
 pip install nisar-pytools[viz]       # Visualization (matplotlib)
 pip install nisar-pytools[all]       # Everything
 ```
@@ -55,6 +56,7 @@ from nisar_pytools import find_nisar, download_urls
 #                  or dict like {"west": -115, "south": 43, "east": -114, "north": 44}
 #   start_date   - start of temporal search window (ISO string or datetime)
 #   end_date     - end of temporal search window
+
 #   product_type - "GSLC", "GUNW", "RSLC", "GCOV", "RIFG", "RUNW", "ROFF", "GOFF"
 #   path_number  - relative orbit / track number (optional)
 #   frame        - frame number (optional)
@@ -147,6 +149,45 @@ coh = coherence(slc1, slc2, window_size=11)
 unw, conncomp = unwrap(ifg, coh, nlooks=20.0)
 ```
 
+### Prepare GSLCs for dolphin
+
+[dolphin](https://github.com/isce-framework/dolphin) is an open-source InSAR
+time-series tool (phase linking, unwrapping, network inversion) from the
+OPERA/ISCE framework. `prep_dolphin` crops your GSLCs to an AOI, exports them
+as complex GeoTIFFs, and generates a ready-to-run dolphin config YAML.
+
+```python
+from pathlib import Path
+from nisar_pytools.processing import prep_dolphin
+
+gslc_files = sorted(Path("gslcs/").glob("NISAR_L2_PR_GSLC_*.h5"))
+
+config = prep_dolphin(
+    gslc_paths=gslc_files,
+    out_dir="dolphin_run/",
+    aoi_wgs84=(-110.54, 44.65, -109.63, 45.18),    # Greater Yellowstone
+    skip_dates={"20251104"},                          # drop early-season date
+    dolphin_overrides=[
+        (["phase_linking", "half_window", "y"], 20),
+        (["phase_linking", "half_window", "x"], 20),
+        (["output_options", "strides", "y"], 5),
+        (["output_options", "strides", "x"], 5),
+        (["unwrap_options", "unwrap_method"], "spurt"),
+    ],
+)
+# Logs: "Ready. Review the config, then run:
+#          dolphin run dolphin_run/dolphin_config.yaml"
+```
+
+You can also use `crop_gslc_to_tif` standalone to extract a single GSLC:
+
+```python
+from nisar_pytools.processing import crop_gslc_to_tif
+
+crop_gslc_to_tif("NISAR_L2_PR_GSLC_...h5", "out.tif",
+                 bbox_utm=(540000, 4950000, 560000, 4970000))
+```
+
 ### Phase Linking
 
 ```python
@@ -209,7 +250,7 @@ lia = local_incidence_angle(dem, los_x, los_y, los_z, heights, x_rg, y_rg, epsg=
 ## Roadmap
 
 - [x] Lazy HDF5 reader returning xarray DataTree with CRS
-- [x] GSLC and GUNW support
+- [x] Prep dolphin to run GSLC to dolphin ready yaml + geotiffs
 - [x] ASF search and parallel download with validation
 - [x] GSLC time-series stacking
 - [x] Interferogram, coherence, multilooking, phase extraction

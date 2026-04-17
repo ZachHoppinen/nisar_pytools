@@ -44,6 +44,10 @@ dependencies = [
 dem = [
     "dem_stitcher",
 ]
+dolphin = [
+    "dolphin-sar",
+    "pyyaml>=6.0",
+]
 dev = [
     "build",
     "nbstripout",
@@ -60,7 +64,7 @@ viz = [
     "matplotlib",
 ]
 all = [
-    "nisar-pytools[dem,notebooks,viz]",
+    "nisar-pytools[dem,dolphin,notebooks,viz]",
 ]
 
 [project.urls]

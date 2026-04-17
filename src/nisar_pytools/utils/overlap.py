@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 import xarray as xr
+from pyproj import Transformer
 
 
 def crop_to_overlap(
@@ -92,3 +93,44 @@ def overlap_fraction(
         return 0.0
 
     return float(np.clip(overlap_area / smaller_area, 0, 1))
+
+
+def reproject_bbox(
+    bbox: tuple[float, float, float, float],
+    src_crs: int | str = 4326,
+    dst_crs: int | str = 32612,
+) -> tuple[float, float, float, float]:
+    """Reproject a bounding box between coordinate reference systems.
+
+    Transforms all four corners and returns the enclosing bbox in the
+    target CRS. Handles CRS specified as EPSG integers or strings
+    like ``"EPSG:4326"``.
+
+    Parameters
+    ----------
+    bbox : tuple of float
+        (xmin, ymin, xmax, ymax) in the source CRS. For WGS84 this is
+        (lon_min, lat_min, lon_max, lat_max).
+    src_crs : int or str
+        Source CRS as EPSG code (e.g. ``4326``) or string (``"EPSG:4326"``).
+    dst_crs : int or str
+        Target CRS.
+
+    Returns
+    -------
+    tuple of float
+        (xmin, ymin, xmax, ymax) in the target CRS.
+    """
+    if isinstance(src_crs, int):
+        src_crs = f"EPSG:{src_crs}"
+    if isinstance(dst_crs, int):
+        dst_crs = f"EPSG:{dst_crs}"
+    t = Transformer.from_crs(src_crs, dst_crs, always_xy=True)
+    xmin, ymin, xmax, ymax = bbox
+    xs, ys = [], []
+    for x in (xmin, xmax):
+        for y in (ymin, ymax):
+            tx, ty = t.transform(x, y)
+            xs.append(tx)
+            ys.append(ty)
+    return min(xs), min(ys), max(xs), max(ys)

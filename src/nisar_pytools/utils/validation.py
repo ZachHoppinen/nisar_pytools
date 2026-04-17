@@ -9,6 +9,8 @@ import h5py
 REQUIRED_GROUP = "science/LSAR"
 PRODUCT_TYPE_PATH = "science/LSAR/identification/productType"
 SUPPORTED_PRODUCTS = {"GSLC", "GUNW"}
+VALID_FREQUENCIES = {"frequencyA", "frequencyB"}
+VALID_POLARIZATIONS = {"HH", "HV", "VH", "VV"}
 
 
 def validate_nisar_hdf5(filepath: str | Path) -> h5py.File:
@@ -94,3 +96,55 @@ def detect_product_type(h5file: h5py.File) -> str:
         )
 
     return product_type
+
+
+def validate_frequency(frequency: str) -> str:
+    """Validate a NISAR frequency group name.
+
+    Parameters
+    ----------
+    frequency : str
+        Frequency group (e.g. ``"frequencyA"``).
+
+    Returns
+    -------
+    str
+        The validated frequency string.
+
+    Raises
+    ------
+    ValueError
+        If not a recognized NISAR frequency.
+    """
+    if frequency not in VALID_FREQUENCIES:
+        raise ValueError(
+            f"frequency must be one of {sorted(VALID_FREQUENCIES)}, "
+            f"got '{frequency}'"
+        )
+    return frequency
+
+
+def validate_polarization(polarization: str) -> str:
+    """Validate a SAR polarization channel name.
+
+    Parameters
+    ----------
+    polarization : str
+        Polarization (e.g. ``"HH"``, ``"HV"``).
+
+    Returns
+    -------
+    str
+        The validated polarization string.
+
+    Raises
+    ------
+    ValueError
+        If not a recognized SAR polarization.
+    """
+    if polarization not in VALID_POLARIZATIONS:
+        raise ValueError(
+            f"polarization must be one of {sorted(VALID_POLARIZATIONS)}, "
+            f"got '{polarization}'"
+        )
+    return polarization
