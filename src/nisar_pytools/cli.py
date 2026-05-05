@@ -58,6 +58,8 @@ _GUNW_BANDS: tuple[str, ...] = (
     "coherence",
     "ionosphere",
 )
+
+
 def _normalize_freq(freq: str) -> str:
     """Accept 'A'/'B' or 'frequencyA'/'frequencyB' and return the full key.
 
@@ -239,12 +241,13 @@ def _resolve_bbox(
             raise SystemExit(
                 "--bbox-wgs84 requires the file to have a CRS, but none was found."
             )
-        # Reuse the package's reproject_bbox helper so corner-handling
-        # behavior is consistent across the codebase.
+        # Use to_string() (e.g. "EPSG:32611" or full WKT) instead of
+        # to_epsg() so this still works for non-EPSG CRSes -- to_epsg()
+        # returns None for those and would propagate as a confusing error.
         return reproject_bbox(
             tuple(args.bbox_wgs84),
             src_crs=4326,
-            dst_crs=target_crs.to_epsg(),
+            dst_crs=target_crs.to_string(),
         )
     return None
 
