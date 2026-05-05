@@ -119,7 +119,12 @@ def gunw_h5(tmp_path):
             "unwrappedInterferogram",
             ny=6,
             nx=8,
-            data_vars=["unwrappedPhase", "coherenceMagnitude", "connectedComponents"],
+            data_vars=[
+                "unwrappedPhase",
+                "coherenceMagnitude",
+                "connectedComponents",
+                "ionospherePhaseScreen",
+            ],
         )
 
         # wrappedInterferogram (12x16 — different resolution)

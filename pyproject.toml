@@ -67,6 +67,9 @@ all = [
     "nisar-pytools[dem,dolphin,notebooks,viz]",
 ]
 
+[project.scripts]
+nisar_pytools = "nisar_pytools.cli:main"
+
 [project.urls]
 Homepage = "https://github.com/zmhoppinen/nisar_pytools"
 Repository = "https://github.com/zmhoppinen/nisar_pytools"

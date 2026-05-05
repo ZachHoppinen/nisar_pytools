@@ -115,6 +115,40 @@ print(hh.rio.crs)                # EPSG:32611
 freq_a = dt["science/LSAR/GSLC/grids/frequencyA"].dataset
 ```
 
+### CLI - geotiff export
+
+Dump bands from a NISAR HDF5 as GeoTIFFs without writing any Python --
+handy for sharing a single layer with a colleague or pulling into QGIS.
+Installed with the package as the `nisar_pytools` console script; run
+`nisar_pytools to-geotiff --help` for the full band catalog and flag
+reference.
+
+```bash
+# Default-all: write every default band for the product, next to the .h5
+# GUNW -> unwrapped_phase, wrapped_phase, coherence, ionosphere
+# GSLC -> amplitude (10*log10(|SLC|^2) in dB)
+nisar_pytools to-geotiff NISAR_L2_PR_GUNW_...h5
+
+# One band, explicit polarization, custom output directory
+nisar_pytools to-geotiff NISAR_L2_PR_GUNW_...h5 \
+    --band unwrapped_phase --pol HH --output-dir /tmp/gunw_tifs
+
+# Subset a multi-GB GSLC to a lat/lon AOI -- streamed, low memory
+nisar_pytools to-geotiff NISAR_L2_PR_GSLC_...h5 \
+    --bbox-wgs84 -118.5 41.0 -118.3 41.2
+
+# Same crop in the file's native CRS (UTM meters here)
+nisar_pytools to-geotiff NISAR_L2_PR_GSLC_...h5 \
+    --bbox 380000 4540000 400000 4565000
+
+# GSLC amplitude on frequency B
+nisar_pytools to-geotiff NISAR_L2_PR_GSLC_...h5 --freq B
+```
+
+Outputs are tiled GeoTIFFs named `<h5_stem>_<band>_<pol>.tif`. Writes
+stream chunk-by-chunk via dask + rioxarray, so a full-resolution 41 GB
+GSLC processes with ~330 MB peak memory.
+
 ### Stack GSLCs into a Time Series
 
 ```python
