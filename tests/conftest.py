@@ -153,6 +153,33 @@ def gunw_h5(tmp_path):
         ident.create_dataset("secondaryAbsoluteOrbitNumber", data=np.uint32(1560))
         _add_common_identification(ident)
 
+        # Minimal orbit metadata so the spatial-baseline path in the
+        # `info` subcommand is exercised. Each orbit gets a small but
+        # well-spaced time series plus a `units` attribute carrying the
+        # epoch (the format used by real NISAR products).
+        for label, epoch_str, dx in (
+            ("reference", "2025-11-03T00:00:00", 0.0),
+            # Secondary is offset 100 m in x to give a non-zero baseline.
+            ("secondary", "2025-11-15T00:00:00", 100.0),
+        ):
+            og = f.create_group(f"science/LSAR/GUNW/metadata/orbit/{label}")
+            t_arr = np.linspace(45000.0, 46000.0, 20, dtype="f8")
+            t_ds = og.create_dataset("time", data=t_arr)
+            t_ds.attrs["units"] = f"seconds since {epoch_str}".encode()
+            # ECEF positions: an arbitrary smooth track; secondary is shifted
+            # in x so r_sec - r_ref has a well-defined nonzero baseline.
+            x = np.linspace(-1.39e6, -1.38e6, 20, dtype="f8") + dx
+            y = np.linspace(-6.68e6, -6.69e6, 20, dtype="f8")
+            z = np.linspace(2.05e6, 2.06e6, 20, dtype="f8")
+            og.create_dataset("position", data=np.stack([x, y, z], axis=-1))
+            og.create_dataset(
+                "velocity",
+                data=np.tile(np.array([10.0, -10.0, 10.0]), (20, 1)),
+            )
+        f.create_dataset(
+            "science/LSAR/GUNW/metadata/orbit/temporalBaseline", data=np.uint16(12)
+        )
+
         # Grids / frequencyA
         base = f.create_group("science/LSAR/GUNW/grids/frequencyA")
         base.create_dataset("centerFrequency", data=1.257e9)

@@ -269,6 +269,26 @@ def test_cli_info_gunw_json(gunw_h5, capsys):
     assert "frequencyA" in payload["grids"]
     assert "unwrappedInterferogram" in payload["grids"]["frequencyA"]
 
+    # New stats blocks -- presence + shape, not exact values.
+    unw_grid = payload["grids"]["frequencyA"]["unwrappedInterferogram"]
+    assert "mask_coverage" in unw_grid
+    assert {"valid_count", "total_count", "valid_fraction"} <= unw_grid["mask_coverage"].keys()
+
+    assert "unwrapped_phase" in payload
+    assert "frequencyA/HH" in payload["unwrapped_phase"]
+    assert {"min", "max", "median"} <= payload["unwrapped_phase"]["frequencyA/HH"].keys()
+
+    assert "connected_components" in payload
+    # Synthetic fixture's connectedComponents is all zeros -> no real components,
+    # so the dict can be empty (the helper returns None when nothing connects).
+    # Still valid; we only require the key exists.
+
+    # Spatial baseline: synthetic fixture provides minimal orbit data, so this
+    # should be populated with three positive-magnitude floats.
+    assert "baseline" in payload
+    assert {"perpendicular_m", "parallel_m", "magnitude_m"} <= payload["baseline"].keys()
+    assert payload["baseline"]["magnitude_m"] > 0
+
 
 def test_cli_output_is_tiled_geotiff(gunw_h5, tmp_path):
     """Output should be a tiled GeoTIFF (streaming-friendly)."""

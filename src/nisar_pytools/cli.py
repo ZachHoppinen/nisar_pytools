@@ -334,16 +334,16 @@ def _coord_resolution(da: xr.DataArray) -> tuple[float, float]:
     return x_res, y_res
 
 
-def _coherence_stats(da_coh: xr.DataArray) -> dict | None:
-    """Compute summary stats over a coherence DataArray.
+def _array_stats(da: xr.DataArray) -> dict | None:
+    """Min / max / mean / median / quartiles over the finite pixels of a 2D array.
 
-    Drops non-finite pixels (off-swath nodata). Returns ``None`` if
-    nothing is left after masking. The full array is materialized via
-    ``.values`` -- multilooked GUNW coherence is ~80 MB so this is
-    cheap; we don't want partial sampling because the user is asking
-    for "stats on this product", not "stats on a window".
+    Drops non-finite (NaN/inf, off-swath nodata) before computing.
+    Returns ``None`` if nothing is left after masking. The full array
+    is materialized via ``.values`` -- on multi-looked GUNW grids this
+    is ~80 MB so it's cheap; partial-sampling would defeat the point of
+    a "stats on this product" summary.
     """
-    arr = da_coh.values
+    arr = da.values
     valid = arr[np.isfinite(arr)]
     if valid.size == 0:
         return None
@@ -357,6 +357,155 @@ def _coherence_stats(da_coh: xr.DataArray) -> dict | None:
         "median": float(np.median(valid)),
         "q25": float(np.quantile(valid, 0.25)),
         "q75": float(np.quantile(valid, 0.75)),
+    }
+
+
+def _mask_coverage(da_mask: xr.DataArray) -> dict:
+    """Fraction of valid pixels in an integer mask band.
+
+    Any nonzero value is treated as valid. NISAR L2 mask layers are
+    typically 0=invalid, 1=valid but the convention can vary.
+    """
+    arr = da_mask.values
+    valid = int((arr != 0).sum())
+    total = int(arr.size)
+    return {
+        "valid_count": valid,
+        "total_count": total,
+        "valid_fraction": (valid / total) if total else 0.0,
+    }
+
+
+def _connected_components_stats(da_cc: xr.DataArray) -> dict | None:
+    """Summarize a uint16 connectedComponents band.
+
+    Label 0 is the standard "unconnected / no-component" sentinel.
+    Real components start at 1. Reports the count of distinct components,
+    pixels assigned to a component, and the largest component's share.
+    """
+    arr = da_cc.values
+    nonzero = arr[arr > 0]
+    if nonzero.size == 0:
+        return None
+    labels, counts = np.unique(nonzero, return_counts=True)
+    largest_idx = int(counts.argmax())
+    return {
+        "num_components": int(labels.size),
+        "connected_pixels": int(nonzero.size),
+        "total_pixels": int(arr.size),
+        "connected_fraction": float(nonzero.size / arr.size),
+        "largest_component_label": int(labels[largest_idx]),
+        "largest_component_pixels": int(counts[largest_idx]),
+        "largest_component_fraction": float(counts[largest_idx] / nonzero.size),
+    }
+
+
+def _gunw_scene_center_baseline(
+    dt: xr.DataTree, sample_da: xr.DataArray, h5_path: Path
+) -> dict | None:
+    """Scene-center perpendicular + parallel baseline (meters), GUNW only.
+
+    Approach:
+      1. Read reference and secondary orbit time + position arrays from
+         ``metadata/orbit/{reference,secondary}``. The ``time`` arrays
+         are seconds since an epoch given in the dataset's ``units``
+         attribute (e.g. "seconds since 2025-11-03T00:00:00").
+      2. Scene-center azimuth time = midpoint of each acquisition's
+         (start, end) window from identification, converted to that
+         orbit's epoch.
+      3. Cubic-spline interpolate each orbit at its scene-center time
+         to get r_ref and r_sec in ECEF.
+      4. Scene-center ground point = middle of the data grid in the
+         file's native CRS, reprojected through WGS84 to ECEF on the
+         ellipsoid (h=0).
+      5. LOS_hat = normalize(target - r_ref); B = r_sec - r_ref;
+         B_parallel = B . LOS_hat; B_perp = sqrt(|B|^2 - B_parallel^2).
+         The perpendicular magnitude is reported (sign convention isn't
+         relevant for an info summary).
+
+    Returns ``None`` if any required field is missing (partial file).
+    """
+    # Lazy imports so the rest of the CLI stays light.
+    import re
+    import h5py
+    from scipy.interpolate import make_interp_spline
+    from pyproj import Transformer
+
+    # Read orbit arrays via h5py directly: the package's DataTree reader
+    # routes 1D non-coordinate arrays (like orbit `time`) into Dataset
+    # attrs as a plain list, dropping the `units` sub-attribute we need
+    # to recover the epoch. Going to h5py keeps the dataset attrs intact.
+    def _read_orbit_h5(orbit_grp: h5py.Group) -> tuple | None:
+        if "time" not in orbit_grp or "position" not in orbit_grp:
+            return None
+        t = np.asarray(orbit_grp["time"][...])
+        pos = np.asarray(orbit_grp["position"][...])
+        units = orbit_grp["time"].attrs.get("units", b"")
+        if isinstance(units, bytes):
+            units = units.decode()
+        m = re.match(r"seconds since (.+)", units.strip())
+        if not m:
+            return None
+        return t, pos, pd.Timestamp(m.group(1))
+
+    try:
+        with h5py.File(h5_path, "r") as f:
+            base = "science/LSAR/GUNW/metadata/orbit"
+            if f"{base}/reference" not in f or f"{base}/secondary" not in f:
+                return None
+            ref_data = _read_orbit_h5(f[f"{base}/reference"])
+            sec_data = _read_orbit_h5(f[f"{base}/secondary"])
+    except (OSError, KeyError):
+        return None
+    if ref_data is None or sec_data is None:
+        return None
+    ref_t, ref_pos, ref_epoch = ref_data
+    sec_t, sec_pos, sec_epoch = sec_data
+
+    # Scene-center azimuth time in each orbit's own epoch frame.
+    ident = dt["science/LSAR/identification"].dataset.attrs
+    try:
+        ref_start = pd.Timestamp(ident["referenceZeroDopplerStartTime"])
+        ref_end = pd.Timestamp(ident["referenceZeroDopplerEndTime"])
+        sec_start = pd.Timestamp(ident["secondaryZeroDopplerStartTime"])
+        sec_end = pd.Timestamp(ident["secondaryZeroDopplerEndTime"])
+    except KeyError:
+        return None
+    ref_mid = ref_start + (ref_end - ref_start) / 2
+    sec_mid = sec_start + (sec_end - sec_start) / 2
+    t_ref_scene = (ref_mid - ref_epoch).total_seconds()
+    t_sec_scene = (sec_mid - sec_epoch).total_seconds()
+
+    def _interp_xyz(t_arr, pos_arr, t_query):
+        return np.array(
+            [make_interp_spline(t_arr, pos_arr[:, i], k=3)(t_query) for i in range(3)]
+        )
+
+    r_ref = _interp_xyz(ref_t, ref_pos, t_ref_scene)
+    r_sec = _interp_xyz(sec_t, sec_pos, t_sec_scene)
+
+    # Scene-center ground point: middle of the data grid -> ECEF on the
+    # ellipsoid (height=0). Going through WGS84 gives us pyproj's
+    # well-tested EPSG:4326 -> EPSG:4978 ECEF conversion.
+    crs = sample_da.rio.crs
+    if crs is None:
+        return None
+    x_mid = float((sample_da.x.min() + sample_da.x.max()) / 2)
+    y_mid = float((sample_da.y.min() + sample_da.y.max()) / 2)
+    to_lonlat = Transformer.from_crs(crs.to_string(), "EPSG:4326", always_xy=True)
+    lon, lat = to_lonlat.transform(x_mid, y_mid)
+    to_ecef = Transformer.from_crs("EPSG:4326", "EPSG:4978", always_xy=True)
+    target = np.array(to_ecef.transform(lon, lat, 0.0))
+
+    los = target - r_ref
+    los_hat = los / np.linalg.norm(los)
+    baseline = r_sec - r_ref
+    b_parallel = float(np.dot(baseline, los_hat))
+    b_perp = float(np.sqrt(np.dot(baseline, baseline) - b_parallel**2))
+    return {
+        "perpendicular_m": b_perp,
+        "parallel_m": b_parallel,
+        "magnitude_m": float(np.linalg.norm(baseline)),
     }
 
 
@@ -408,7 +557,7 @@ def _gather_gslc_info(dt: xr.DataTree, h5_path: Path) -> dict:
         "radar_band": ident.get("radarBand", ""),
     }
 
-    # Walk grids -> per-frequency shape, resolution, polarizations.
+    # Walk grids -> per-frequency shape, resolution, polarizations, mask coverage.
     grids: dict = {}
     grids_node = dt["science/LSAR/GSLC/grids"]
     sample_da: xr.DataArray | None = None
@@ -421,11 +570,15 @@ def _gather_gslc_info(dt: xr.DataTree, h5_path: Path) -> dict:
         if sample_da is None:
             sample_da = da
         x_res, y_res = _coord_resolution(da)
-        grids[freq_name] = {
+        grid_info = {
             "polarizations": pols,
             "shape": tuple(da.shape),
             "resolution_m": (x_res, y_res),
         }
+        # GSLC mask layer is at grids/<freq>/mask -- one mask shared by all pols.
+        if "mask" in ds.data_vars:
+            grid_info["mask_coverage"] = _mask_coverage(ds["mask"])
+        grids[freq_name] = grid_info
     info["grids"] = grids
 
     # Geometry needs a sample DataArray to read CRS + extent off of.
@@ -473,6 +626,7 @@ def _gather_gunw_info(dt: xr.DataTree, h5_path: Path) -> dict:
     }
 
     # Walk grids/<freq>/<subproduct>/<pol> for shape/resolution/pols.
+    # Each sub-product carries its own mask layer at the sub-product level.
     grids: dict = {}
     sample_da: xr.DataArray | None = None
     grids_node = dt["science/LSAR/GUNW/grids"]
@@ -481,12 +635,12 @@ def _gather_gunw_info(dt: xr.DataTree, h5_path: Path) -> dict:
         freq_node = dt[freq_path]
         sub_grids: dict = {}
         for sub_name in freq_node.children:
-            sub_node = dt[f"{freq_path}/{sub_name}"]
+            sub_path = f"{freq_path}/{sub_name}"
+            sub_node = dt[sub_path]
             pols = [k for k in sub_node.children if k in VALID_POLARIZATIONS]
             if not pols:
                 continue
-            # Pick the first pol's first 2D array as the representative.
-            pol_ds = dt[f"{freq_path}/{sub_name}/{pols[0]}"].dataset
+            pol_ds = dt[f"{sub_path}/{pols[0]}"].dataset
             data_var_2d = next(
                 (n for n, v in pol_ds.data_vars.items() if v.ndim == 2),
                 None,
@@ -497,11 +651,16 @@ def _gather_gunw_info(dt: xr.DataTree, h5_path: Path) -> dict:
             if sample_da is None:
                 sample_da = da
             x_res, y_res = _coord_resolution(da)
-            sub_grids[sub_name] = {
+            sub_info = {
                 "polarizations": pols,
                 "shape": tuple(da.shape),
                 "resolution_m": (x_res, y_res),
             }
+            # Mask sits one level up from the polarization groups.
+            sub_ds = sub_node.dataset
+            if "mask" in sub_ds.data_vars:
+                sub_info["mask_coverage"] = _mask_coverage(sub_ds["mask"])
+            sub_grids[sub_name] = sub_info
         if sub_grids:
             grids[freq_name] = sub_grids
     info["grids"] = grids
@@ -509,23 +668,43 @@ def _gather_gunw_info(dt: xr.DataTree, h5_path: Path) -> dict:
     if sample_da is not None:
         info["geometry"] = _common_geometry(dt, sample_da)
 
-    # Coherence stats per polarization on the multilooked grid.
+    # Per-pol stats on the multi-looked unwrappedInterferogram grid.
+    # All three (coherence, unwrapped phase, connected components) live
+    # at the same grid so they pair up with the same shape/extent.
     info["coherence"] = {}
+    info["unwrapped_phase"] = {}
+    info["connected_components"] = {}
     for freq_name, sub_grids in grids.items():
         unw = sub_grids.get("unwrappedInterferogram")
         if not unw:
             continue
         for pol in unw["polarizations"]:
-            coh_path = (
+            unw_ds_path = (
                 f"science/LSAR/GUNW/grids/{freq_name}/unwrappedInterferogram/{pol}"
             )
             try:
-                coh = dt[coh_path].dataset["coherenceMagnitude"]
+                unw_ds = dt[unw_ds_path].dataset
             except KeyError:
                 continue
-            stats = _coherence_stats(coh)
-            if stats is not None:
-                info["coherence"][f"{freq_name}/{pol}"] = stats
+            key = f"{freq_name}/{pol}"
+            if "coherenceMagnitude" in unw_ds.data_vars:
+                stats = _array_stats(unw_ds["coherenceMagnitude"])
+                if stats is not None:
+                    info["coherence"][key] = stats
+            if "unwrappedPhase" in unw_ds.data_vars:
+                stats = _array_stats(unw_ds["unwrappedPhase"])
+                if stats is not None:
+                    info["unwrapped_phase"][key] = stats
+            if "connectedComponents" in unw_ds.data_vars:
+                cc = _connected_components_stats(unw_ds["connectedComponents"])
+                if cc is not None:
+                    info["connected_components"][key] = cc
+
+    # Spatial baseline (perpendicular + parallel at scene center).
+    if sample_da is not None:
+        baseline = _gunw_scene_center_baseline(dt, sample_da, h5_path)
+        if baseline is not None:
+            info["baseline"] = baseline
     return info
 
 
@@ -582,6 +761,13 @@ def _format_info_text(info: dict) -> str:
     lines.append("")
 
     # Grids: GSLC is freq -> {pols, shape, res}; GUNW is freq -> sub -> {pols, shape, res}.
+    # Mask coverage is appended to a grid's line if present.
+    def _mask_str(grid_dict: dict) -> str:
+        mc = grid_dict.get("mask_coverage")
+        if mc is None:
+            return ""
+        return f"  [mask valid {mc['valid_fraction']*100:.1f}%]"
+
     lines.append("  grids:")
     if info["product"] == "GSLC":
         for freq_name, g in info["grids"].items():
@@ -590,7 +776,7 @@ def _format_info_text(info: dict) -> str:
             pols = ", ".join(g["polarizations"])
             lines.append(
                 f"    {freq_name}: {shape[0]} x {shape[1]} @ "
-                f"{x_res:g} m x {y_res:g} m  (pols: {pols})"
+                f"{x_res:g} m x {y_res:g} m  (pols: {pols}){_mask_str(g)}"
             )
     else:  # GUNW
         for freq_name, sub_grids in info["grids"].items():
@@ -601,15 +787,14 @@ def _format_info_text(info: dict) -> str:
                 pols = ", ".join(g["polarizations"])
                 lines.append(
                     f"      {sub_name}: {shape[0]} x {shape[1]} @ "
-                    f"{x_res:g} m x {y_res:g} m  (pols: {pols})"
+                    f"{x_res:g} m x {y_res:g} m  (pols: {pols}){_mask_str(g)}"
                 )
 
-    # Coherence stats only present on GUNW.
-    coh = info.get("coherence")
-    if coh:
+    def _stats_block(title: str, stats_dict: dict) -> None:
+        """Append a per-pol stats block (used for coherence + phase)."""
         lines.append("")
-        lines.append("  coherence (multi-looked grid):")
-        for key, s in coh.items():
+        lines.append(f"  {title}:")
+        for key, s in stats_dict.items():
             lines.append(
                 f"    {key}: valid {s['valid_fraction']*100:.1f}% "
                 f"({s['valid_count']:,}/{s['total_count']:,})"
@@ -619,6 +804,36 @@ def _format_info_text(info: dict) -> str:
                 f"median={s['median']:.3f}  mean={s['mean']:.3f}  "
                 f"q75={s['q75']:.3f}  max={s['max']:.3f}"
             )
+
+    if info.get("coherence"):
+        _stats_block("coherence (multi-looked grid)", info["coherence"])
+    if info.get("unwrapped_phase"):
+        _stats_block("unwrapped phase (multi-looked grid, radians)", info["unwrapped_phase"])
+
+    cc = info.get("connected_components")
+    if cc:
+        lines.append("")
+        lines.append("  connected components:")
+        for key, c in cc.items():
+            lines.append(
+                f"    {key}: {c['num_components']} component(s), "
+                f"{c['connected_fraction']*100:.1f}% of pixels connected"
+            )
+            lines.append(
+                f"      largest (label {c['largest_component_label']}): "
+                f"{c['largest_component_pixels']:,} px "
+                f"({c['largest_component_fraction']*100:.1f}% of connected)"
+            )
+
+    bl = info.get("baseline")
+    if bl is not None:
+        lines.append("")
+        lines.append("  baseline (scene center):")
+        lines.append(
+            f"    perpendicular: {bl['perpendicular_m']:.1f} m"
+            f"    parallel: {bl['parallel_m']:.1f} m"
+            f"    |B|: {bl['magnitude_m']:.1f} m"
+        )
 
     return "\n".join(lines)
 
