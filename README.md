@@ -117,8 +117,9 @@ freq_a = dt["science/LSAR/GSLC/grids/frequencyA"].dataset
 
 ### CLI - geotiff export
 
-Dump bands from a NISAR HDF5 as GeoTIFFs without writing any Python --
-handy for sharing a single layer with a colleague or pulling into QGIS.
+Command line utility for quick export of commonly used bands from a NISAR HDF5
+as GeoTIFFshandy for pulling into QGIS.
+
 Installed with the package as the `nisar_pytools` console script; run
 `nisar_pytools to-geotiff --help` for the full band catalog and flag
 reference.
