@@ -13,6 +13,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history + tags so setuptools-scm can read the release tag.
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:

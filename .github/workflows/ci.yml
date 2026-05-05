@@ -15,6 +15,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history + tags so setuptools-scm can derive the version.
+          fetch-depth: 0
 
       - uses: conda-incubator/setup-miniconda@v3
         with:

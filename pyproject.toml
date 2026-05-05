@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nisar-pytools"
-version = "0.1.1"
+dynamic = ["version"]
 description = "Open source Python tools for working with NISAR datasets"
 readme = "README.md"
 license = "MIT"
@@ -77,6 +77,15 @@ Issues = "https://github.com/zmhoppinen/nisar_pytools/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools_scm]
+# Version is derived from git tags (e.g. v0.2.0). Between tags
+# setuptools-scm produces a dev version like 0.2.1.dev3+g<sha>.
+# The generated file is gitignored; it's written at build/install time
+# and imported by nisar_pytools/__init__.py to expose __version__.
+version_file = "src/nisar_pytools/_version.py"
+# Used when there's no git history (e.g. installing from a sdist tarball).
+fallback_version = "0.0.0+unknown"
 
 [tool.ruff]
 line-length = 100
