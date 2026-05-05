@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -220,6 +221,53 @@ def test_cli_bbox_and_bbox_wgs84_mutually_exclusive(gunw_h5, tmp_path):
             "--bbox-wgs84", "0", "0", "1", "1",
             "--output-dir", str(tmp_path),
         ])
+
+
+# --- info subcommand ----------------------------------------------------
+
+def test_cli_info_gslc_text(gslc_h5, capsys):
+    """info on GSLC prints the headline fields users will look for."""
+    rc = main(["info", str(gslc_h5)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "GSLC" in out
+    assert "track:" in out
+    assert "frame:" in out
+    assert "Ascending" in out
+    assert "frequencyA" in out
+    assert "frequencyB" in out
+    # GSLC has a single time, not reference/secondary.
+    assert "reference:" not in out
+
+
+def test_cli_info_gunw_text_includes_coherence(gunw_h5, capsys):
+    """info on GUNW prints reference/secondary times and coherence stats."""
+    rc = main(["info", str(gunw_h5)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "GUNW" in out
+    assert "reference:" in out
+    assert "secondary:" in out
+    assert "temporal baseline:" in out
+    assert "coherence" in out
+    # The synthetic fixture's coherence is all-zero -> valid stats but min==max==0.
+    assert "frequencyA/HH" in out
+
+
+def test_cli_info_gunw_json(gunw_h5, capsys):
+    """--json emits parseable JSON with the expected top-level keys."""
+    rc = main(["info", str(gunw_h5), "--json"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    payload = json.loads(out)
+    assert payload["product"] == "GUNW"
+    assert "acquisition" in payload
+    assert "reference_start" in payload["acquisition"]
+    # Fixture sets reference=2025-11-03 and secondary=2025-11-15.
+    assert payload["acquisition"]["temporal_baseline_days"] == 12
+    assert "grids" in payload
+    assert "frequencyA" in payload["grids"]
+    assert "unwrappedInterferogram" in payload["grids"]["frequencyA"]
 
 
 def test_cli_output_is_tiled_geotiff(gunw_h5, tmp_path):

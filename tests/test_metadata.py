@@ -34,15 +34,7 @@ class TestMetadata:
         assert info["track_number"] == 77
 
     def test_bounding_polygon_from_fixture(self, gslc_h5):
-        # Fixture doesn't have boundingPolygon, so we add one
-        import h5py
-        with h5py.File(gslc_h5, "a") as f:
-            ident = f["science/LSAR/identification"]
-            ident.create_dataset(
-                "boundingPolygon",
-                data=b"POLYGON ((-115 43, -114 43, -114 44, -115 44, -115 43))",
-            )
-
+        # The synthetic fixture now provides a boundingPolygon (see conftest).
         dt = open_nisar(gslc_h5)
         poly = get_bounding_polygon(dt)
         assert isinstance(poly, Polygon)

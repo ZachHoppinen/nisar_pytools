@@ -4,7 +4,9 @@ Single binary ``nisar_pytools`` with subcommands.
 
 Currently supported:
     nisar_pytools to-geotiff <h5> [--band ...] [--pol ...] [--freq ...]
-                                  [--output-dir ...]
+                                  [--output-dir ...] [--bbox ...]
+                                  [--bbox-wgs84 ...]
+    nisar_pytools info <h5> [--json]
 
 Subcommand: ``to-geotiff``
     Convert a NISAR HDF5 file (GUNW or GSLC) into one or more GeoTIFFs.
@@ -28,6 +30,7 @@ is omitted, GeoTIFFs are placed next to the input HDF5 file. Output naming:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 import threading
@@ -35,11 +38,12 @@ from pathlib import Path
 
 import dask.array as dask_array
 import numpy as np
+import pandas as pd
 import xarray as xr
 
 from nisar_pytools import open_nisar
 from nisar_pytools.utils.conversion import to_db
-from nisar_pytools.utils.metadata import get_product_type, get_slc
+from nisar_pytools.utils.metadata import get_bounding_polygon, get_product_type, get_slc
 from nisar_pytools.utils.overlap import reproject_bbox
 from nisar_pytools.utils.validation import (
     VALID_POLARIZATIONS,
@@ -309,13 +313,360 @@ def cmd_to_geotiff(args: argparse.Namespace) -> None:
         _write_geotiff(da, out_path)
 
 
+# ---------------------------------------------------------------------------
+# `info` subcommand
+# ---------------------------------------------------------------------------
+
+def _format_bytes(n: float) -> str:
+    """Render a byte count as a short human-readable string (B/KB/MB/GB/TB)."""
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if abs(n) < 1024:
+            return f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} PB"
+
+
+def _coord_resolution(da: xr.DataArray) -> tuple[float, float]:
+    """Pixel size in (x, y) from the first two coordinate values."""
+    # Falls back to 0.0 if the axis has fewer than 2 samples (1-pixel raster).
+    x_res = abs(float(da.x[1] - da.x[0])) if da.x.size > 1 else 0.0
+    y_res = abs(float(da.y[1] - da.y[0])) if da.y.size > 1 else 0.0
+    return x_res, y_res
+
+
+def _coherence_stats(da_coh: xr.DataArray) -> dict | None:
+    """Compute summary stats over a coherence DataArray.
+
+    Drops non-finite pixels (off-swath nodata). Returns ``None`` if
+    nothing is left after masking. The full array is materialized via
+    ``.values`` -- multilooked GUNW coherence is ~80 MB so this is
+    cheap; we don't want partial sampling because the user is asking
+    for "stats on this product", not "stats on a window".
+    """
+    arr = da_coh.values
+    valid = arr[np.isfinite(arr)]
+    if valid.size == 0:
+        return None
+    return {
+        "valid_count": int(valid.size),
+        "total_count": int(arr.size),
+        "valid_fraction": float(valid.size / arr.size),
+        "min": float(valid.min()),
+        "max": float(valid.max()),
+        "mean": float(valid.mean()),
+        "median": float(np.median(valid)),
+        "q25": float(np.quantile(valid, 0.25)),
+        "q75": float(np.quantile(valid, 0.75)),
+    }
+
+
+def _common_geometry(dt: xr.DataTree, sample_da: xr.DataArray) -> dict:
+    """Extract CRS, native bbox, and WGS84 bbox shared across product types."""
+    crs = sample_da.rio.crs
+    crs_str = crs.to_string() if crs is not None else None
+
+    polygon = get_bounding_polygon(dt)
+    wgs84_minx, wgs84_miny, wgs84_maxx, wgs84_maxy = polygon.bounds
+
+    return {
+        "crs": crs_str,
+        "native_bbox": (
+            float(sample_da.x.min()),
+            float(sample_da.y.min()),
+            float(sample_da.x.max()),
+            float(sample_da.y.max()),
+        ),
+        "wgs84_bbox": (wgs84_minx, wgs84_miny, wgs84_maxx, wgs84_maxy),
+    }
+
+
+def _gather_gslc_info(dt: xr.DataTree, h5_path: Path) -> dict:
+    """Collect GSLC-relevant metadata + per-frequency grid descriptors."""
+    ident = dt["science/LSAR/identification"].dataset.attrs
+    info: dict = {
+        "file": h5_path.name,
+        "size": _format_bytes(h5_path.stat().st_size),
+        "size_bytes": h5_path.stat().st_size,
+        "product": "GSLC",
+        "product_version": ident.get("productVersion", ""),
+        "spec_version": ident.get("productSpecificationVersion", ""),
+        "processing_datetime": ident.get("processingDateTime", ""),
+    }
+
+    # Single acquisition (start -> end, single orbit).
+    info["acquisition"] = {
+        "start": ident.get("zeroDopplerStartTime", ""),
+        "end": ident.get("zeroDopplerEndTime", ""),
+        "orbit": int(ident["absoluteOrbitNumber"]) if "absoluteOrbitNumber" in ident else None,
+    }
+
+    info["geometry_meta"] = {
+        "track": int(ident["trackNumber"]),
+        "frame": int(ident["frameNumber"]),
+        "direction": ident.get("orbitPassDirection", ""),
+        "look": ident.get("lookDirection", ""),
+        "radar_band": ident.get("radarBand", ""),
+    }
+
+    # Walk grids -> per-frequency shape, resolution, polarizations.
+    grids: dict = {}
+    grids_node = dt["science/LSAR/GSLC/grids"]
+    sample_da: xr.DataArray | None = None
+    for freq_name in grids_node.children:
+        ds = dt[f"science/LSAR/GSLC/grids/{freq_name}"].dataset
+        pols = [p for p in ds.data_vars if p in VALID_POLARIZATIONS]
+        if not pols:
+            continue
+        da = ds[pols[0]]
+        if sample_da is None:
+            sample_da = da
+        x_res, y_res = _coord_resolution(da)
+        grids[freq_name] = {
+            "polarizations": pols,
+            "shape": tuple(da.shape),
+            "resolution_m": (x_res, y_res),
+        }
+    info["grids"] = grids
+
+    # Geometry needs a sample DataArray to read CRS + extent off of.
+    if sample_da is not None:
+        info["geometry"] = _common_geometry(dt, sample_da)
+    return info
+
+
+def _gather_gunw_info(dt: xr.DataTree, h5_path: Path) -> dict:
+    """Collect GUNW-relevant metadata + per-sub-product grids + coherence stats."""
+    ident = dt["science/LSAR/identification"].dataset.attrs
+    info: dict = {
+        "file": h5_path.name,
+        "size": _format_bytes(h5_path.stat().st_size),
+        "size_bytes": h5_path.stat().st_size,
+        "product": "GUNW",
+        "product_version": ident.get("productVersion", ""),
+        "spec_version": ident.get("productSpecificationVersion", ""),
+        "processing_datetime": ident.get("processingDateTime", ""),
+    }
+
+    # Reference + secondary acquisitions and their absolute orbits.
+    ref_start = pd.Timestamp(ident.get("referenceZeroDopplerStartTime", ""))
+    sec_start = pd.Timestamp(ident.get("secondaryZeroDopplerStartTime", ""))
+    info["acquisition"] = {
+        "reference_start": ident.get("referenceZeroDopplerStartTime", ""),
+        "reference_end": ident.get("referenceZeroDopplerEndTime", ""),
+        "secondary_start": ident.get("secondaryZeroDopplerStartTime", ""),
+        "secondary_end": ident.get("secondaryZeroDopplerEndTime", ""),
+        "reference_orbit": int(ident["referenceAbsoluteOrbitNumber"])
+        if "referenceAbsoluteOrbitNumber" in ident
+        else None,
+        "secondary_orbit": int(ident["secondaryAbsoluteOrbitNumber"])
+        if "secondaryAbsoluteOrbitNumber" in ident
+        else None,
+        "temporal_baseline_days": int((sec_start - ref_start).days),
+    }
+
+    info["geometry_meta"] = {
+        "track": int(ident["trackNumber"]),
+        "frame": int(ident["frameNumber"]),
+        "direction": ident.get("orbitPassDirection", ""),
+        "look": ident.get("lookDirection", ""),
+        "radar_band": ident.get("radarBand", ""),
+    }
+
+    # Walk grids/<freq>/<subproduct>/<pol> for shape/resolution/pols.
+    grids: dict = {}
+    sample_da: xr.DataArray | None = None
+    grids_node = dt["science/LSAR/GUNW/grids"]
+    for freq_name in grids_node.children:
+        freq_path = f"science/LSAR/GUNW/grids/{freq_name}"
+        freq_node = dt[freq_path]
+        sub_grids: dict = {}
+        for sub_name in freq_node.children:
+            sub_node = dt[f"{freq_path}/{sub_name}"]
+            pols = [k for k in sub_node.children if k in VALID_POLARIZATIONS]
+            if not pols:
+                continue
+            # Pick the first pol's first 2D array as the representative.
+            pol_ds = dt[f"{freq_path}/{sub_name}/{pols[0]}"].dataset
+            data_var_2d = next(
+                (n for n, v in pol_ds.data_vars.items() if v.ndim == 2),
+                None,
+            )
+            if data_var_2d is None:
+                continue
+            da = pol_ds[data_var_2d]
+            if sample_da is None:
+                sample_da = da
+            x_res, y_res = _coord_resolution(da)
+            sub_grids[sub_name] = {
+                "polarizations": pols,
+                "shape": tuple(da.shape),
+                "resolution_m": (x_res, y_res),
+            }
+        if sub_grids:
+            grids[freq_name] = sub_grids
+    info["grids"] = grids
+
+    if sample_da is not None:
+        info["geometry"] = _common_geometry(dt, sample_da)
+
+    # Coherence stats per polarization on the multilooked grid.
+    info["coherence"] = {}
+    for freq_name, sub_grids in grids.items():
+        unw = sub_grids.get("unwrappedInterferogram")
+        if not unw:
+            continue
+        for pol in unw["polarizations"]:
+            coh_path = (
+                f"science/LSAR/GUNW/grids/{freq_name}/unwrappedInterferogram/{pol}"
+            )
+            try:
+                coh = dt[coh_path].dataset["coherenceMagnitude"]
+            except KeyError:
+                continue
+            stats = _coherence_stats(coh)
+            if stats is not None:
+                info["coherence"][f"{freq_name}/{pol}"] = stats
+    return info
+
+
+def _format_info_text(info: dict) -> str:
+    """Render the info dict as a compact human-readable block."""
+    lines: list[str] = []
+    lines.append(info["file"])
+    lines.append(
+        f"  product:      {info['product']} (v{info['product_version']}, "
+        f"spec {info['spec_version']})"
+    )
+    lines.append(f"  size:         {info['size']}")
+    lines.append(f"  processed:    {info['processing_datetime']}")
+    lines.append("")
+
+    # Acquisition block differs between GSLC and GUNW.
+    acq = info["acquisition"]
+    lines.append("  acquisition:")
+    if info["product"] == "GSLC":
+        lines.append(f"    time:         {acq['start']}  ->  {acq['end']}")
+        lines.append(f"    orbit:        {acq['orbit']}")
+    else:
+        lines.append(
+            f"    reference:    {acq['reference_start']}  ->  "
+            f"{acq['reference_end']}  (orbit {acq['reference_orbit']})"
+        )
+        lines.append(
+            f"    secondary:    {acq['secondary_start']}  ->  "
+            f"{acq['secondary_end']}  (orbit {acq['secondary_orbit']})"
+        )
+        lines.append(f"    temporal baseline: {acq['temporal_baseline_days']} days")
+    lines.append("")
+
+    geom_meta = info["geometry_meta"]
+    geom = info.get("geometry", {})
+    lines.append("  geometry:")
+    lines.append(f"    track:        {geom_meta['track']}")
+    lines.append(f"    frame:        {geom_meta['frame']}")
+    lines.append(f"    direction:    {geom_meta['direction']}")
+    lines.append(f"    look:         {geom_meta['look']}")
+    lines.append(f"    radar band:   {geom_meta['radar_band']}")
+    if geom:
+        lines.append(f"    crs:          {geom['crs']}")
+        nb = geom["native_bbox"]
+        lines.append(
+            f"    extent:       {nb[0]:.1f}, {nb[1]:.1f}  ->  "
+            f"{nb[2]:.1f}, {nb[3]:.1f}  (native CRS)"
+        )
+        wb = geom["wgs84_bbox"]
+        lines.append(
+            f"    extent (lon/lat): "
+            f"{wb[0]:.4f}, {wb[1]:.4f}  ->  {wb[2]:.4f}, {wb[3]:.4f}"
+        )
+    lines.append("")
+
+    # Grids: GSLC is freq -> {pols, shape, res}; GUNW is freq -> sub -> {pols, shape, res}.
+    lines.append("  grids:")
+    if info["product"] == "GSLC":
+        for freq_name, g in info["grids"].items():
+            shape = g["shape"]
+            x_res, y_res = g["resolution_m"]
+            pols = ", ".join(g["polarizations"])
+            lines.append(
+                f"    {freq_name}: {shape[0]} x {shape[1]} @ "
+                f"{x_res:g} m x {y_res:g} m  (pols: {pols})"
+            )
+    else:  # GUNW
+        for freq_name, sub_grids in info["grids"].items():
+            lines.append(f"    {freq_name}:")
+            for sub_name, g in sub_grids.items():
+                shape = g["shape"]
+                x_res, y_res = g["resolution_m"]
+                pols = ", ".join(g["polarizations"])
+                lines.append(
+                    f"      {sub_name}: {shape[0]} x {shape[1]} @ "
+                    f"{x_res:g} m x {y_res:g} m  (pols: {pols})"
+                )
+
+    # Coherence stats only present on GUNW.
+    coh = info.get("coherence")
+    if coh:
+        lines.append("")
+        lines.append("  coherence (multi-looked grid):")
+        for key, s in coh.items():
+            lines.append(
+                f"    {key}: valid {s['valid_fraction']*100:.1f}% "
+                f"({s['valid_count']:,}/{s['total_count']:,})"
+            )
+            lines.append(
+                f"      min={s['min']:.3f}  q25={s['q25']:.3f}  "
+                f"median={s['median']:.3f}  mean={s['mean']:.3f}  "
+                f"q75={s['q75']:.3f}  max={s['max']:.3f}"
+            )
+
+    return "\n".join(lines)
+
+
+def cmd_info(args: argparse.Namespace) -> None:
+    """Implementation of the ``info`` subcommand."""
+    h5_path = Path(args.h5_path).expanduser().resolve()
+    dt = open_nisar(h5_path)
+    product = get_product_type(dt)
+    if product == "GSLC":
+        info = _gather_gslc_info(dt, h5_path)
+    elif product == "GUNW":
+        info = _gather_gunw_info(dt, h5_path)
+    else:
+        raise SystemExit(
+            f"Unsupported product type '{product}'. "
+            f"Only GSLC and GUNW are currently supported."
+        )
+
+    if args.json:
+        # default=str so pd.Timestamp / np types serialize cleanly.
+        print(json.dumps(info, indent=2, default=str))
+    else:
+        print(_format_info_text(info))
+
+
+# ---------------------------------------------------------------------------
+# Parser
+# ---------------------------------------------------------------------------
+
 _TOP_DESCRIPTION = """\
 Command-line tools for working with NISAR HDF5 products.
 
 Subcommands:
   to-geotiff   Convert GUNW / GSLC HDF5 bands into GeoTIFFs.
+  info         Print a summary (product type, track/frame, times, pols,
+               grids, coherence stats) for a GUNW or GSLC HDF5 file.
 
 Run `nisar_pytools <subcommand> --help` for subcommand-specific help.
+"""
+
+_INFO_DESCRIPTION = """\
+Print a summary of a NISAR HDF5 file: product type, track/frame, orbit
+direction, acquisition time(s), available polarizations and frequencies,
+per-grid shape + resolution, and (for GUNW) coherence stats on the
+multi-looked grid.
+
+Use --json to emit machine-readable output instead of the formatted text.
 """
 
 _TO_GEOTIFF_DESCRIPTION = """\
@@ -523,6 +874,24 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.set_defaults(func=cmd_to_geotiff)
+
+    # info subcommand -----------------------------------------------------
+    p_info = sub.add_parser(
+        "info",
+        help="Print a summary of a NISAR HDF5 file (track/frame, times, pols, coherence stats).",
+        description=_INFO_DESCRIPTION,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_info.add_argument(
+        "h5_path",
+        help="Path to a NISAR HDF5 file (GUNW or GSLC). Product type is auto-detected.",
+    )
+    p_info.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit JSON instead of formatted text. Numeric stats stay as floats.",
+    )
+    p_info.set_defaults(func=cmd_info)
     return parser
 
 

@@ -5,6 +5,31 @@ import numpy as np
 import pytest
 
 
+# A minimal but well-formed WKT polygon used for the synthetic boundingPolygon
+# attribute. The coordinates are nominal and don't need to match the gridded
+# data extents; downstream code only reads .bounds() off the parsed polygon.
+_TEST_BOUNDING_POLYGON_WKT = (
+    "POLYGON ((-117.01 36.10, -116.99 36.10, "
+    "-116.99 36.13, -117.01 36.13, -117.01 36.10))"
+)
+
+
+def _add_common_identification(ident: h5py.Group) -> None:
+    """Identification fields shared by GSLC and GUNW synthetic fixtures.
+
+    These mirror what real NISAR L2 products carry. Tests that exercise
+    the `info` subcommand or anything else reading identification metadata
+    expect these to be present.
+    """
+    ident.create_dataset("orbitPassDirection", data=b"Ascending")
+    ident.create_dataset("lookDirection", data=b"Left")
+    ident.create_dataset("radarBand", data=b"L")
+    ident.create_dataset("productVersion", data=b"1.0.2")
+    ident.create_dataset("productSpecificationVersion", data=b"1.4.0")
+    ident.create_dataset("processingDateTime", data=b"2026-02-13T00:24:54")
+    ident.create_dataset("boundingPolygon", data=_TEST_BOUNDING_POLYGON_WKT.encode())
+
+
 def _create_frequency_group(parent, name, ny, nx, polarizations=("HH", "HV")):
     """Create a GSLC-style frequency group with coordinate scales and data."""
     grp = parent.create_group(name)
@@ -85,9 +110,11 @@ def gslc_h5(tmp_path):
         ident.create_dataset("productType", data=b"GSLC")
         ident.create_dataset("trackNumber", data=np.uint32(77))
         ident.create_dataset("frameNumber", data=np.uint16(24))
-        ident.create_dataset("orbitPassDirection", data=b"Ascending")
         ident.create_dataset("absoluteOrbitNumber", data=np.uint32(1387))
+        # Single GSLC acquisition has start/end times.
         ident.create_dataset("zeroDopplerStartTime", data=b"2025-11-03T12:46:15.000000000")
+        ident.create_dataset("zeroDopplerEndTime", data=b"2025-11-03T12:46:50.999342105")
+        _add_common_identification(ident)
 
         # Grids
         grids = f.create_group("science/LSAR/GSLC/grids")
@@ -108,6 +135,23 @@ def gunw_h5(tmp_path):
         ident = f.create_group("science/LSAR/identification")
         ident.create_dataset("productType", data=b"GUNW")
         ident.create_dataset("trackNumber", data=np.uint32(149))
+        ident.create_dataset("frameNumber", data=np.uint16(24))
+        # GUNW carries reference + secondary acquisition timestamps and orbits.
+        ident.create_dataset(
+            "referenceZeroDopplerStartTime", data=b"2025-11-03T12:46:15.000000000"
+        )
+        ident.create_dataset(
+            "referenceZeroDopplerEndTime", data=b"2025-11-03T12:46:50.999342105"
+        )
+        ident.create_dataset(
+            "secondaryZeroDopplerStartTime", data=b"2025-11-15T12:46:15.000000000"
+        )
+        ident.create_dataset(
+            "secondaryZeroDopplerEndTime", data=b"2025-11-15T12:46:50.999342105"
+        )
+        ident.create_dataset("referenceAbsoluteOrbitNumber", data=np.uint32(1387))
+        ident.create_dataset("secondaryAbsoluteOrbitNumber", data=np.uint32(1560))
+        _add_common_identification(ident)
 
         # Grids / frequencyA
         base = f.create_group("science/LSAR/GUNW/grids/frequencyA")
