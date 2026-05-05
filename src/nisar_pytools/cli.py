@@ -400,112 +400,59 @@ def _connected_components_stats(da_cc: xr.DataArray) -> dict | None:
     }
 
 
-def _gunw_scene_center_baseline(
-    dt: xr.DataTree, sample_da: xr.DataArray, h5_path: Path
-) -> dict | None:
+def _gunw_scene_center_baseline(dt: xr.DataTree, h5_path: Path) -> dict | None:
     """Scene-center perpendicular + parallel baseline (meters), GUNW only.
 
-    Approach:
-      1. Read reference and secondary orbit time + position arrays from
-         ``metadata/orbit/{reference,secondary}``. The ``time`` arrays
-         are seconds since an epoch given in the dataset's ``units``
-         attribute (e.g. "seconds since 2025-11-03T00:00:00").
-      2. Scene-center azimuth time = midpoint of each acquisition's
-         (start, end) window from identification, converted to that
-         orbit's epoch.
-      3. Cubic-spline interpolate each orbit at its scene-center time
-         to get r_ref and r_sec in ECEF.
-      4. Scene-center ground point = middle of the data grid in the
-         file's native CRS, reprojected through WGS84 to ECEF on the
-         ellipsoid (h=0).
-      5. LOS_hat = normalize(target - r_ref); B = r_sec - r_ref;
-         B_parallel = B . LOS_hat; B_perp = sqrt(|B|^2 - B_parallel^2).
-         The perpendicular magnitude is reported (sign convention isn't
-         relevant for an info summary).
+    NISAR GUNW products carry pre-computed baseline cubes on the radar
+    grid: ``metadata/radarGrid/perpendicularBaseline`` and
+    ``parallelBaseline`` with shape (height_layers, az, rng). These are
+    produced by the JPL processing pipeline using the per-pixel look
+    vector and slant range -- properly accounting for the off-nadir
+    InSAR geometry that an orbit-only computation gets wrong by
+    multiple orders of magnitude.
 
-    Returns ``None`` if any required field is missing (partial file).
+    We report the median across the middle height layer (a single
+    representative value for the scene) and the value at the central
+    pixel of that layer (the literal "scene center"). Reading is done
+    via h5py because these cubes live under metadata and may not be
+    surfaced by the DataTree walker. Returns None on missing fields.
     """
-    # Lazy imports so the rest of the CLI stays light.
-    import re
     import h5py
-    from scipy.interpolate import make_interp_spline
-    from pyproj import Transformer
-
-    # Read orbit arrays via h5py directly: the package's DataTree reader
-    # routes 1D non-coordinate arrays (like orbit `time`) into Dataset
-    # attrs as a plain list, dropping the `units` sub-attribute we need
-    # to recover the epoch. Going to h5py keeps the dataset attrs intact.
-    def _read_orbit_h5(orbit_grp: h5py.Group) -> tuple | None:
-        if "time" not in orbit_grp or "position" not in orbit_grp:
-            return None
-        t = np.asarray(orbit_grp["time"][...])
-        pos = np.asarray(orbit_grp["position"][...])
-        units = orbit_grp["time"].attrs.get("units", b"")
-        if isinstance(units, bytes):
-            units = units.decode()
-        m = re.match(r"seconds since (.+)", units.strip())
-        if not m:
-            return None
-        return t, pos, pd.Timestamp(m.group(1))
 
     try:
         with h5py.File(h5_path, "r") as f:
-            base = "science/LSAR/GUNW/metadata/orbit"
-            if f"{base}/reference" not in f or f"{base}/secondary" not in f:
+            base = "science/LSAR/GUNW/metadata/radarGrid"
+            if f"{base}/perpendicularBaseline" not in f:
                 return None
-            ref_data = _read_orbit_h5(f[f"{base}/reference"])
-            sec_data = _read_orbit_h5(f[f"{base}/secondary"])
+            bperp = np.asarray(f[f"{base}/perpendicularBaseline"][...])
+            bpar = np.asarray(f[f"{base}/parallelBaseline"][...])
     except (OSError, KeyError):
         return None
-    if ref_data is None or sec_data is None:
+
+    if bperp.ndim != 3 or bperp.shape != bpar.shape:
         return None
-    ref_t, ref_pos, ref_epoch = ref_data
-    sec_t, sec_pos, sec_epoch = sec_data
 
-    # Scene-center azimuth time in each orbit's own epoch frame.
-    ident = dt["science/LSAR/identification"].dataset.attrs
-    try:
-        ref_start = pd.Timestamp(ident["referenceZeroDopplerStartTime"])
-        ref_end = pd.Timestamp(ident["referenceZeroDopplerEndTime"])
-        sec_start = pd.Timestamp(ident["secondaryZeroDopplerStartTime"])
-        sec_end = pd.Timestamp(ident["secondaryZeroDopplerEndTime"])
-    except KeyError:
+    # Middle height layer is closest to the average terrain; the central
+    # pixel of that layer is the literal scene center.
+    mid_h = bperp.shape[0] // 2
+    layer_perp = bperp[mid_h]
+    layer_par = bpar[mid_h]
+    cy, cx = layer_perp.shape[0] // 2, layer_perp.shape[1] // 2
+
+    finite_perp = layer_perp[np.isfinite(layer_perp)]
+    finite_par = layer_par[np.isfinite(layer_par)]
+    if finite_perp.size == 0 or finite_par.size == 0:
         return None
-    ref_mid = ref_start + (ref_end - ref_start) / 2
-    sec_mid = sec_start + (sec_end - sec_start) / 2
-    t_ref_scene = (ref_mid - ref_epoch).total_seconds()
-    t_sec_scene = (sec_mid - sec_epoch).total_seconds()
 
-    def _interp_xyz(t_arr, pos_arr, t_query):
-        return np.array(
-            [make_interp_spline(t_arr, pos_arr[:, i], k=3)(t_query) for i in range(3)]
-        )
-
-    r_ref = _interp_xyz(ref_t, ref_pos, t_ref_scene)
-    r_sec = _interp_xyz(sec_t, sec_pos, t_sec_scene)
-
-    # Scene-center ground point: middle of the data grid -> ECEF on the
-    # ellipsoid (height=0). Going through WGS84 gives us pyproj's
-    # well-tested EPSG:4326 -> EPSG:4978 ECEF conversion.
-    crs = sample_da.rio.crs
-    if crs is None:
-        return None
-    x_mid = float((sample_da.x.min() + sample_da.x.max()) / 2)
-    y_mid = float((sample_da.y.min() + sample_da.y.max()) / 2)
-    to_lonlat = Transformer.from_crs(crs.to_string(), "EPSG:4326", always_xy=True)
-    lon, lat = to_lonlat.transform(x_mid, y_mid)
-    to_ecef = Transformer.from_crs("EPSG:4326", "EPSG:4978", always_xy=True)
-    target = np.array(to_ecef.transform(lon, lat, 0.0))
-
-    los = target - r_ref
-    los_hat = los / np.linalg.norm(los)
-    baseline = r_sec - r_ref
-    b_parallel = float(np.dot(baseline, los_hat))
-    b_perp = float(np.sqrt(np.dot(baseline, baseline) - b_parallel**2))
     return {
-        "perpendicular_m": b_perp,
-        "parallel_m": b_parallel,
-        "magnitude_m": float(np.linalg.norm(baseline)),
+        "perpendicular_center_m": float(layer_perp[cy, cx])
+        if np.isfinite(layer_perp[cy, cx])
+        else float(np.median(finite_perp)),
+        "parallel_center_m": float(layer_par[cy, cx])
+        if np.isfinite(layer_par[cy, cx])
+        else float(np.median(finite_par)),
+        "perpendicular_median_m": float(np.median(finite_perp)),
+        "parallel_median_m": float(np.median(finite_par)),
     }
 
 
@@ -557,6 +504,10 @@ def _gather_gslc_info(dt: xr.DataTree, h5_path: Path) -> dict:
         "radar_band": ident.get("radarBand", ""),
     }
 
+    # Roll up polarizations across frequencies for a top-level summary.
+    # For GSLC each frequency has its own pol list, e.g. {A: [HH,HV], B: [HH]}.
+    info["polarizations"] = {}
+
     # Walk grids -> per-frequency shape, resolution, polarizations, mask coverage.
     grids: dict = {}
     grids_node = dt["science/LSAR/GSLC/grids"]
@@ -579,6 +530,7 @@ def _gather_gslc_info(dt: xr.DataTree, h5_path: Path) -> dict:
         if "mask" in ds.data_vars:
             grid_info["mask_coverage"] = _mask_coverage(ds["mask"])
         grids[freq_name] = grid_info
+        info["polarizations"][freq_name] = pols
     info["grids"] = grids
 
     # Geometry needs a sample DataArray to read CRS + extent off of.
@@ -624,6 +576,9 @@ def _gather_gunw_info(dt: xr.DataTree, h5_path: Path) -> dict:
         "look": ident.get("lookDirection", ""),
         "radar_band": ident.get("radarBand", ""),
     }
+    # Top-level pol summary; populated below as we walk the grids. For GUNW
+    # we report the union across sub-products per frequency.
+    info["polarizations"] = {}
 
     # Walk grids/<freq>/<subproduct>/<pol> for shape/resolution/pols.
     # Each sub-product carries its own mask layer at the sub-product level.
@@ -663,6 +618,13 @@ def _gather_gunw_info(dt: xr.DataTree, h5_path: Path) -> dict:
             sub_grids[sub_name] = sub_info
         if sub_grids:
             grids[freq_name] = sub_grids
+            # Union of pols across sub-products of this frequency.
+            all_pols: list = []
+            for g in sub_grids.values():
+                for p in g["polarizations"]:
+                    if p not in all_pols:
+                        all_pols.append(p)
+            info["polarizations"][freq_name] = all_pols
     info["grids"] = grids
 
     if sample_da is not None:
@@ -700,11 +662,11 @@ def _gather_gunw_info(dt: xr.DataTree, h5_path: Path) -> dict:
                 if cc is not None:
                     info["connected_components"][key] = cc
 
-    # Spatial baseline (perpendicular + parallel at scene center).
-    if sample_da is not None:
-        baseline = _gunw_scene_center_baseline(dt, sample_da, h5_path)
-        if baseline is not None:
-            info["baseline"] = baseline
+    # Spatial baseline (perpendicular + parallel at scene center) read
+    # from the file's pre-computed radarGrid cubes.
+    baseline = _gunw_scene_center_baseline(dt, h5_path)
+    if baseline is not None:
+        info["baseline"] = baseline
     return info
 
 
@@ -746,6 +708,11 @@ def _format_info_text(info: dict) -> str:
     lines.append(f"    direction:    {geom_meta['direction']}")
     lines.append(f"    look:         {geom_meta['look']}")
     lines.append(f"    radar band:   {geom_meta['radar_band']}")
+    pol_summary = info.get("polarizations") or {}
+    if pol_summary:
+        # Show as "HH, HV (frequencyA); HH (frequencyB)" -- one line, easy to grep.
+        pol_parts = [f"{', '.join(p)} ({fq})" for fq, p in pol_summary.items()]
+        lines.append(f"    polarizations: {';  '.join(pol_parts)}")
     if geom:
         lines.append(f"    crs:          {geom['crs']}")
         nb = geom["native_bbox"]
@@ -828,11 +795,14 @@ def _format_info_text(info: dict) -> str:
     bl = info.get("baseline")
     if bl is not None:
         lines.append("")
-        lines.append("  baseline (scene center):")
+        lines.append("  baseline (from pre-computed radarGrid cube):")
         lines.append(
-            f"    perpendicular: {bl['perpendicular_m']:.1f} m"
-            f"    parallel: {bl['parallel_m']:.1f} m"
-            f"    |B|: {bl['magnitude_m']:.1f} m"
+            f"    scene center -> perpendicular: {bl['perpendicular_center_m']:+.1f} m  "
+            f"parallel: {bl['parallel_center_m']:+.1f} m"
+        )
+        lines.append(
+            f"    median       -> perpendicular: {bl['perpendicular_median_m']:+.1f} m  "
+            f"parallel: {bl['parallel_median_m']:+.1f} m"
         )
 
     return "\n".join(lines)

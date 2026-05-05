@@ -283,11 +283,19 @@ def test_cli_info_gunw_json(gunw_h5, capsys):
     # so the dict can be empty (the helper returns None when nothing connects).
     # Still valid; we only require the key exists.
 
-    # Spatial baseline: synthetic fixture provides minimal orbit data, so this
-    # should be populated with three positive-magnitude floats.
+    # Spatial baseline: synthetic fixture now ships pre-computed
+    # perpendicular/parallel cubes (see conftest), so the baseline dict
+    # must be present with both center and median values.
     assert "baseline" in payload
-    assert {"perpendicular_m", "parallel_m", "magnitude_m"} <= payload["baseline"].keys()
-    assert payload["baseline"]["magnitude_m"] > 0
+    assert {
+        "perpendicular_center_m",
+        "parallel_center_m",
+        "perpendicular_median_m",
+        "parallel_median_m",
+    } <= payload["baseline"].keys()
+
+    # Polarizations are surfaced as a top-level dict, freq -> list.
+    assert payload["polarizations"]["frequencyA"] == ["HH"]
 
 
 def test_cli_output_is_tiled_geotiff(gunw_h5, tmp_path):

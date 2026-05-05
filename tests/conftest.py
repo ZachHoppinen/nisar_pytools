@@ -153,29 +153,21 @@ def gunw_h5(tmp_path):
         ident.create_dataset("secondaryAbsoluteOrbitNumber", data=np.uint32(1560))
         _add_common_identification(ident)
 
-        # Minimal orbit metadata so the spatial-baseline path in the
-        # `info` subcommand is exercised. Each orbit gets a small but
-        # well-spaced time series plus a `units` attribute carrying the
-        # epoch (the format used by real NISAR products).
-        for label, epoch_str, dx in (
-            ("reference", "2025-11-03T00:00:00", 0.0),
-            # Secondary is offset 100 m in x to give a non-zero baseline.
-            ("secondary", "2025-11-15T00:00:00", 100.0),
-        ):
-            og = f.create_group(f"science/LSAR/GUNW/metadata/orbit/{label}")
-            t_arr = np.linspace(45000.0, 46000.0, 20, dtype="f8")
-            t_ds = og.create_dataset("time", data=t_arr)
-            t_ds.attrs["units"] = f"seconds since {epoch_str}".encode()
-            # ECEF positions: an arbitrary smooth track; secondary is shifted
-            # in x so r_sec - r_ref has a well-defined nonzero baseline.
-            x = np.linspace(-1.39e6, -1.38e6, 20, dtype="f8") + dx
-            y = np.linspace(-6.68e6, -6.69e6, 20, dtype="f8")
-            z = np.linspace(2.05e6, 2.06e6, 20, dtype="f8")
-            og.create_dataset("position", data=np.stack([x, y, z], axis=-1))
-            og.create_dataset(
-                "velocity",
-                data=np.tile(np.array([10.0, -10.0, 10.0]), (20, 1)),
-            )
+        # Pre-computed perpendicular + parallel baseline cubes on the
+        # radarGrid, mirroring real NISAR L2 products. Real files store
+        # these as (height_layers, az, rng) float32. The `info`
+        # subcommand reads them directly rather than recomputing from
+        # orbit state -- the JPL pipeline produces values that are
+        # physically correct (per-pixel LOS-aware geometry).
+        bperp = np.full((4, 6, 8), -98.0, dtype="f4")
+        bpar = np.full((4, 6, 8), -40.0, dtype="f4")
+        f.create_dataset(
+            "science/LSAR/GUNW/metadata/radarGrid/perpendicularBaseline", data=bperp
+        )
+        f.create_dataset(
+            "science/LSAR/GUNW/metadata/radarGrid/parallelBaseline", data=bpar
+        )
+        # Pre-computed temporal baseline scalar that real files include.
         f.create_dataset(
             "science/LSAR/GUNW/metadata/orbit/temporalBaseline", data=np.uint16(12)
         )
