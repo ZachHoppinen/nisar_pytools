@@ -1,7 +1,6 @@
 name: nisar_pytools
 channels:
   - conda-forge
-  - defaults
 dependencies:
   - python>=3.10
   - asf_search>=7.0

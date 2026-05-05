@@ -19,11 +19,12 @@ jobs:
           # Full history + tags so setuptools-scm can derive the version.
           fetch-depth: 0
 
-      - uses: conda-incubator/setup-miniconda@v3
+      - uses: mamba-org/setup-micromamba@v1
         with:
           environment-file: environment.yml
-          activate-environment: nisar_pytools
-          miniforge-version: latest
+          # Cache the solved environment keyed on environment.yml hash;
+          # subsequent runs skip the solve entirely. Saves ~3-5 minutes.
+          cache-environment: true
 
       - name: Lint
         run: ruff check src/ tests/
