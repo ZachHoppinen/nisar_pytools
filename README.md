@@ -81,6 +81,22 @@ Outputs are tiled GeoTIFFs named `<h5_stem>_<band>_<pol>.tif`. Writes
 stream chunk-by-chunk via dask + rioxarray, so a full-resolution 41 GB
 GSLC processes with ~330 MB peak memory.
 
+### h5 info
+
+Quick summary of a NISAR HDF5 (GSLC or GUNW): product type/version, file
+size, acquisition time(s), track/frame/direction, polarizations, per-grid
+shape and resolution, native + WGS84 extent, and (for GUNW) coherence /
+unwrapped-phase stats, connected-component summary, and pre-computed
+perpendicular + parallel baselines from the radarGrid cube.
+
+```bash
+# Formatted text summary
+nisar_pytools info NISAR_L2_PR_GUNW_...h5
+
+# Same fields, machine-readable
+nisar_pytools info NISAR_L2_PR_GSLC_...h5 --json
+```
+
 
 ## Usage - Python
 
