@@ -1,0 +1,157 @@
+# Adapted from local/gunws/NISAR_L2_PR_GUNW_..._004_077_..._001.rc.yaml
+# (the JPL runconfig that produced our reference GUNW).
+#
+# Differences from the JPL run:
+#   - Reference + secondary RSLCs point at our local copies
+#   - DEM points at scripts/isce3/inputs/dem.tif (Copernicus 30m we fetched)
+#   - water_mask_file: null   (try without; add later if workflow requires)
+#   - orbit_files: null       (use orbit embedded in the RSLC)
+#   - troposphere_weather_model_files: null + troposphere_delay.enabled: false
+#     (no ECMWF locally)
+#   - tec_file: null          (split-spectrum ionosphere does not need TEC)
+#   - product_path / scratch_path / log path live under scripts/isce3/
+runconfig:
+    name: NISAR_INSAR_RUNCONFIG
+    groups:
+        pge_name_group:
+            pge_name: INSAR_L_PGE
+        input_file_group:
+            reference_rslc_file: /Users/zmhoppinen/Documents/nisar_pytools/local/rslc/NISAR_L1_PR_RSLC_004_077_A_024_4005_DHDH_A_20251103T124615_20251103T124650_X05009_N_F_J_001.h5
+            secondary_rslc_file: /Users/zmhoppinen/Documents/nisar_pytools/local/rslc/NISAR_L1_PR_RSLC_005_077_A_024_4005_DHDH_A_20251115T124615_20251115T124650_X05009_N_F_J_001.h5
+            qa_gunw_input_file: scripts/isce3/output/product.h5
+        dynamic_ancillary_file_group:
+            dem_file: /Users/zmhoppinen/Documents/nisar_pytools/scripts/isce3/inputs/dem.tif
+            water_mask_file:
+            orbit_files:
+                reference_orbit_file:
+                secondary_orbit_file:
+            troposphere_weather_model_files:
+                reference_troposphere_file:
+                secondary_troposphere_file:
+            tec_file:
+        primary_executable:
+            product_type: GUNW
+            product_version:
+                rifg_version: 1.0.2
+                roff_version: 1.0.2
+                runw_version: 1.0.2
+                goff_version: 1.0.2
+                gunw_version: 1.0.2
+            composite_release_id: X05010
+            processing_type: PR
+            product_accuracy: N
+            processing_center: J
+            partial_granule_id: NISAR_{Level}_PR_{ProductType}_004_077_A_024_005_{MODE}_{PO}_{RefStartDateTime}_{RefEndDateTime}_{SecStartDateTime}_{SecEndDateTime}_X05010_N_F_J_001
+        product_path_group:
+            product_path: scripts/isce3/output
+            scratch_path: scripts/isce3/scratch
+            sas_output_file: scripts/isce3/output/product.h5
+            product_counter: 1
+            qa_output_dir: scripts/isce3/output/qa_insar
+        debug_level_group:
+            debug_switch: false
+        processing:
+            input_subset:
+                list_of_frequencies:
+                    A: [HH]
+            dem_download:
+                source:
+                top_left:
+                    x:
+                    y:
+                bottom_right:
+                    x:
+                    y:
+            geocode:
+                output_epsg: 32611
+                # Cropped to ~80x80 km AOI around the scene center
+                # (full scene was 324000..684000 / 4746240..5101920).
+                top_left:
+                    y_abs: 4964080.0
+                    x_abs: 464000.0
+                bottom_right:
+                    y_abs: 4884080.0
+                    x_abs: 544000.0
+                output_posting:
+                    A:
+                        x_posting: 80
+                        y_posting: 80
+                wrapped_interferogram:
+                    interp_method: SINC
+                    output_posting:
+                        A:
+                            x_posting: 20
+                            y_posting: 20
+            radar_grid_cubes:
+                output_epsg: 32611
+                output_posting:
+                    x_posting:
+                    y_posting:
+                top_left:
+                    y_abs:
+                    x_abs:
+                bottom_right:
+                    y_abs:
+                    x_abs:
+            ionosphere_phase_correction:
+                spectral_diversity: main_diff_ms_band
+                enabled: true
+                dispersive_filter:
+                    filter_mask_type:
+                    - coherence
+                    - subswath_mask
+                    filter_coherence_threshold: 0.2
+                    kernel_range: 39
+                    kernel_azimuth: 39
+                    sigma_range: 13
+                    sigma_azimuth: 13
+            troposphere_delay:
+                enabled: false
+            dense_offsets:
+                enabled: true
+                window_range: 64
+                window_azimuth: 96
+                half_search_range: 16
+                half_search_azimuth: 16
+                skip_range: 75
+                skip_azimuth: 75
+                correlation_surface_oversampling_factor: 16
+                deramping_method: magnitude
+            offsets_product:
+                enabled: false
+            rubbersheet:
+                enabled: true
+                polyfitting:
+                    enabled: true
+                    degree: 2
+                    critical_value: 0.1
+                    samples_along_range: 200
+                    samples_along_azimuth: 200
+            fine_resample:
+                enabled: true
+            crossmul:
+                range_looks: 5
+                azimuth_looks: 6
+            phase_unwrap:
+                range_looks: 13
+                azimuth_looks: 16
+                preprocess_wrapped_phase:
+                    enabled: true
+                    mask:
+                        mask_type: subswath_mask
+                bridge:
+                    enabled: false
+        worker:
+            internet_access: false
+            gpu_enabled: false
+            intermediate_files_removal_enabled: true
+        qa:
+            gunw:
+                workflows:
+                    validate: false
+                    qa_reports: false
+        logging:
+            path: scripts/isce3/scratch/insar.log
+            # 'a' (append) preserves prior runs' "successfully ran X" lines
+            # so the Persistence module can skip completed steps on relaunch.
+            write_mode: a

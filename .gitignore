@@ -1,6 +1,27 @@
 # Local data
 local/
 
+# isce3 workflow data dirs (DEM, intermediate products, output GUNW, logs).
+# Only commit the runconfig + python/sh scripts under scripts/isce3/.
+scripts/isce3/inputs/
+scripts/isce3/output/
+scripts/isce3/scratch/
+
+# Generic guard: any data file types that shouldn't be in git
+*.h5
+*.tif
+*.tiff
+*.vrt
+*.rdr
+*.slc
+*.unw
+*.cor
+*.log
+*.nc
+*.grb
+*.grb2
+*.bin
+
 # Python
 __pycache__/
 *.py[cod]
