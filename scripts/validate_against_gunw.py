@@ -170,15 +170,27 @@ def main():
     our_bperp = our_baselines["perpendicular_baseline"].values
     our_bpar = our_baselines["parallel_baseline"].values
 
+    # GUNW masks ~half the radarGrid as NaN (off-swath corners). For an
+    # apples-to-apples comparison restrict stats to GUNW-valid pixels.
+    valid = np.isfinite(gunw_bperp) & np.isfinite(gunw_bpar) & np.isfinite(our_bperp) & np.isfinite(our_bpar)
+    res_perp = (our_bperp - gunw_bperp)[valid]
+    res_par = (our_bpar - gunw_bpar)[valid]
+
+    print(f"   GUNW-valid pixels: {valid.sum():,} / {valid.size:,}")
     print(f"   {'':>25} {'Our':>12} {'GUNW':>12} {'Diff':>12}")
     print("   " + "-" * 55)
-    print(f"   {'B_perp mean (m)':>25} {np.nanmean(our_bperp):>12.1f} {np.nanmean(gunw_bperp):>12.1f} {np.nanmean(our_bperp) - np.nanmean(gunw_bperp):>12.1f}")
-    print(f"   {'B_perp range (m)':>25} [{np.nanmin(our_bperp):.1f}, {np.nanmax(our_bperp):.1f}]   [{np.nanmin(gunw_bperp):.1f}, {np.nanmax(gunw_bperp):.1f}]")
-    print(f"   {'B_par mean (m)':>25} {np.nanmean(our_bpar):>12.1f} {np.nanmean(gunw_bpar):>12.1f} {np.nanmean(our_bpar) - np.nanmean(gunw_bpar):>12.1f}")
-    print(f"   {'B_par range (m)':>25} [{np.nanmin(our_bpar):.1f}, {np.nanmax(our_bpar):.1f}]   [{np.nanmin(gunw_bpar):.1f}, {np.nanmax(gunw_bpar):.1f}]")
+    print(f"   {'B_perp mean (m)':>25} {our_bperp[valid].mean():>12.3f} {gunw_bperp[valid].mean():>12.3f} {res_perp.mean():>12.3f}")
+    print(f"   {'B_perp std (m)':>25} {our_bperp[valid].std():>12.3f} {gunw_bperp[valid].std():>12.3f}")
+    print(f"   {'B_par mean (m)':>25} {our_bpar[valid].mean():>12.3f} {gunw_bpar[valid].mean():>12.3f} {res_par.mean():>12.3f}")
+    print(f"   {'B_par std (m)':>25} {our_bpar[valid].std():>12.3f} {gunw_bpar[valid].std():>12.3f}")
+    print()
+    print(f"   per-pixel residual std:  B_perp={res_perp.std():.4f} m   B_par={res_par.std():.4f} m")
+    print(f"   per-pixel residual rms:  B_perp={np.sqrt((res_perp**2).mean()):.4f} m   B_par={np.sqrt((res_par**2).mean()):.4f} m")
 
-    results["bperp_diff_m"] = np.nanmean(our_bperp) - np.nanmean(gunw_bperp)
-    results["bpar_diff_m"] = np.nanmean(our_bpar) - np.nanmean(gunw_bpar)
+    results["bperp_diff_m"] = float(res_perp.mean())
+    results["bpar_diff_m"] = float(res_par.mean())
+    results["bperp_residual_std_m"] = float(res_perp.std())
+    results["bpar_residual_std_m"] = float(res_par.std())
 
     # =========================================================================
     # SUMMARY
@@ -191,8 +203,10 @@ def main():
         ("Interferogram phase correlation > 0.90", results["ifg_phase_correlation"] > 0.90),
         ("Interferogram phase bias < 0.1 rad", abs(results["ifg_phase_bias_rad"]) < 0.1),
         ("Coherence best correlation > 0.90", results["coh_best_correlation"] > 0.90),
-        ("B_perp difference < 2 m", abs(results["bperp_diff_m"]) < 2),
-        ("B_par difference < 2 m", abs(results["bpar_diff_m"]) < 2),
+        ("B_perp mean residual < 0.10 m", abs(results["bperp_diff_m"]) < 0.10),
+        ("B_par mean residual < 0.10 m", abs(results["bpar_diff_m"]) < 0.10),
+        ("B_perp residual std < 0.05 m", results["bperp_residual_std_m"] < 0.05),
+        ("B_par residual std < 0.05 m", results["bpar_residual_std_m"] < 0.05),
     ]
 
     all_pass = True

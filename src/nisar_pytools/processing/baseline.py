@@ -38,8 +38,8 @@ def compute_baseline(
         Secondary GSLC DataTree.
     dem : xr.DataArray, optional
         DEM on the radarGrid for accurate ground point heights. If
-        ``None``, height=0 is used (introduces error in mountainous
-        terrain).
+        ``None``, the radarGrid's own middle-layer ``heightAboveEllipsoid``
+        is used.
 
     Returns
     -------
@@ -51,32 +51,45 @@ def compute_baseline(
     ref_pos, ref_vel, ref_time = _extract_orbit(dt_reference)
     sec_pos, _, sec_time = _extract_orbit(dt_secondary)
 
-    # Extract radarGrid metadata from reference
+    # Extract radarGrid metadata from both products
     rg = dt_reference["science/LSAR/GSLC/metadata/radarGrid"].dataset
+    rg_sec = dt_secondary["science/LSAR/GSLC/metadata/radarGrid"].dataset
 
-    # Select middle height layer if 3D
+    # Select middle height layer if 3D. Use the same layer index in both
+    # products since GSLC radarGrids share the same heightAboveEllipsoid stack.
     if "z" in rg.dims:
         mid = rg.sizes["z"] // 2
         rg_2d = rg.isel(z=mid)
+        rg_sec_2d = rg_sec.isel(z=mid) if "z" in rg_sec.dims else rg_sec
     else:
+        mid = 0
         rg_2d = rg
+        rg_sec_2d = rg_sec
 
-    az_time = np.asarray(rg_2d["zeroDopplerAzimuthTime"])
+    # Each satellite is at zero-Doppler toward a given target at its own UTC
+    # time -- read each from its own product so we evaluate each orbit spline
+    # at the right epoch.
+    az_ref = np.asarray(rg_2d["zeroDopplerAzimuthTime"])
+    az_sec = np.asarray(rg_sec_2d["zeroDopplerAzimuthTime"])
 
     # Ensure az_time is 2D (ny, nx)
     x_rg = np.asarray(rg.coords["x"])
     y_rg = np.asarray(rg.coords["y"])
-    if az_time.ndim == 1:
-        # 1D azimuth time → broadcast to (ny, nx)
-        az_time = np.broadcast_to(az_time[:, np.newaxis], (len(y_rg), len(x_rg)))
+    if az_ref.ndim == 1:
+        az_ref = np.broadcast_to(az_ref[:, np.newaxis], (len(y_rg), len(x_rg)))
+    if az_sec.ndim == 1:
+        az_sec = np.broadcast_to(az_sec[:, np.newaxis], (len(y_rg), len(x_rg)))
 
     # Get EPSG for coordinate conversion
     epsg = _extract_epsg_from_dataset(rg)
 
-    # Convert ground points from projected coords to ECEF
-    height = 0.0
+    # Ground point height: prefer a user-supplied DEM, otherwise use the
+    # radarGrid's own middle-layer height (matches the layer of az time
+    # we sliced above; using h=0 introduces a few-tens-of-cm bias).
     if dem is not None:
         height = dem
+    else:
+        height = _middle_layer_height(rg, mid)
     ground_ecef = _grid_to_ecef(x_rg, y_rg, epsg, height=height)
 
     # Build interpolators once, reuse for all components
@@ -84,10 +97,10 @@ def compute_baseline(
     sec_pos_interp = _make_orbit_interpolator(sec_pos, sec_time)
     ref_vel_interp = _make_orbit_interpolator(ref_vel, ref_time)
 
-    # Interpolate satellite positions to azimuth times
-    ref_sat = _eval_orbit_interpolator(ref_pos_interp, az_time)
-    sec_sat = _eval_orbit_interpolator(sec_pos_interp, az_time)
-    ref_vel_at = _eval_orbit_interpolator(ref_vel_interp, az_time)
+    # Interpolate each satellite at its own zero-Doppler azimuth time
+    ref_sat = _eval_orbit_interpolator(ref_pos_interp, az_ref)
+    sec_sat = _eval_orbit_interpolator(sec_pos_interp, az_sec)
+    ref_vel_at = _eval_orbit_interpolator(ref_vel_interp, az_ref)
 
     # Baseline vector in ECEF
     baseline = sec_sat - ref_sat
@@ -196,6 +209,22 @@ def _extract_epsg_from_dataset(rg: xr.Dataset) -> int:
         "Could not determine EPSG code from radarGrid. "
         "Ensure the DataTree was opened with open_nisar()."
     )
+
+
+def _middle_layer_height(rg: xr.Dataset, mid: int) -> float:
+    """Height (m above ellipsoid) of the radarGrid layer at index ``mid``.
+
+    Falls back to 0.0 if no height information is present (synthetic
+    test fixtures without heightAboveEllipsoid).
+    """
+    # rioxarray sets a "z" coord from heightAboveEllipsoid when present.
+    if "z" in rg.coords and rg.coords["z"].size > mid:
+        return float(np.asarray(rg.coords["z"])[mid])
+    if "heightAboveEllipsoid" in rg:
+        h = np.asarray(rg["heightAboveEllipsoid"])
+        if h.ndim == 1 and h.size > mid:
+            return float(h[mid])
+    return 0.0
 
 
 def _make_orbit_interpolator(
