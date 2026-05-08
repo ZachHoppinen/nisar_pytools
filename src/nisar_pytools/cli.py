@@ -864,7 +864,7 @@ Subcommands:
   info          Print a summary (product type, track/frame, times, pols,
                 grids, coherence stats) for a GUNW or GSLC HDF5 file.
   rslc-to-gunw  Run nisar.workflows.insar on an RSLC pair and produce
-                a GUNW (requires isce3 + nisar in a separate env).
+                a GUNW (requires the [isce3] optional dep group).
 
 Run `nisar_pytools <subcommand> --help` for subcommand-specific help.
 """

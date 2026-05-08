@@ -98,11 +98,50 @@ def _get_bounds_latlon(
 
 
 def _bounds_from_h5(path: Path, buffer: float) -> list[float]:
-    """Extract bounds from an HDF5 file by finding the first group with coordinates."""
+    """Extract bounds from an HDF5 file.
+
+    Tries two sources in order:
+
+    1. ``science/LSAR/identification/boundingPolygon`` -- a WGS84 WKT polygon
+       present in every NISAR product family (RSLC, GSLC, GUNW, ...). This is
+       what we want for radar-grid products that have no projected x/y coords.
+    2. The first group containing ``xCoordinates`` and ``yCoordinates``
+       (geocoded products only: GSLC, GUNW). Used as a fallback so existing
+       behaviour on geocoded inputs is unchanged.
+    """
+    bounds = _bounds_from_h5_polygon(path, buffer)
+    if bounds is not None:
+        return bounds
+
     with h5py.File(path, "r") as f:
         x, y, epsg = _find_coords_in_h5(f)
-
     return _project_bounds(x, y, epsg, buffer)
+
+
+def _bounds_from_h5_polygon(path: Path, buffer: float) -> list[float] | None:
+    """Read NISAR ``identification/boundingPolygon`` (WGS84 WKT) and return
+    [lon_min, lat_min, lon_max, lat_max] padded by ``buffer`` degrees.
+
+    Returns ``None`` if the field is absent (e.g. non-NISAR HDF5 files).
+    """
+    from shapely import wkt
+
+    candidate_paths = (
+        "science/LSAR/identification/boundingPolygon",
+        "science/SSAR/identification/boundingPolygon",
+    )
+    with h5py.File(path, "r") as f:
+        for p in candidate_paths:
+            if p in f:
+                raw = f[p][()]
+                wkt_str = raw.decode() if isinstance(raw, bytes) else raw
+                poly = wkt.loads(wkt_str)
+                lon_min, lat_min, lon_max, lat_max = poly.bounds
+                return [
+                    lon_min - buffer, lat_min - buffer,
+                    lon_max + buffer, lat_max + buffer,
+                ]
+    return None
 
 
 def _find_coords_in_h5(group: h5py.Group) -> tuple[np.ndarray, np.ndarray, int]:
