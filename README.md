@@ -33,7 +33,7 @@ With optional extras:
 pip install nisar-pytools[dem]       # DEM fetching (dem_stitcher)
 pip install nisar-pytools[dolphin]   # dolphin InSAR time-series prep
 pip install nisar-pytools[viz]       # Visualization (matplotlib)
-pip install nisar-pytools[isce3]     # PyPI bits of the isce3 RSLC->GUNW stack
+pip install nisar-pytools[isce3]     # PyPI bits of the isce3 RSLC->GUNW stack (will need mamba install of isce3 libgal-hdf5)
 pip install nisar-pytools[all]       # Everything
 ```
 
@@ -113,7 +113,7 @@ nisar_pytools info NISAR_L2_PR_GSLC_...h5 --json
 
 Wrapper around `nisar.workflows.insar` (the production isce3 InSAR
 workflow) that takes an RSLC pair and produces a GUNW. Requires the
-isce3 stack (see Installation above).
+isce3 stack from environment.yml (see Installation above).
 
 ```bash
 # Minimal: auto-fetch DEM, auto-detect UTM zone + bbox, production-spec runconfig
@@ -256,7 +256,7 @@ unw, conncomp = unwrap(ifg, coh, nlooks=20.0)
 
 The naive (default) and `'range'` outputs differ at full resolution by ~0.75 rad phase std on a representative GSLC chip; after 16×16 multilook the residual drops below the science noise floor at L-band, so the default is fine for the typical RSLC→multilook→unwrap pipeline. Set `antialias` only if you need the full-resolution wrapped phase clean of alias noise.
 
-> Note: `isce3.signal.CrossMultiply` (a separate, simpler ISCE3 class with a numpy-array API) uses `multilookSummed` instead of mean and gives 2× amplitude. We deliberately match the production `Crossmul` (mean) so coherence calculations stay bounded to [0, 1].
+> Note: `isce3.signal.CrossMultiply` (a separate, simpler ISCE3 class with a numpy-array API) uses `multilookSummed` instead of mean and gives 2× amplitude. We deliberately match the NISAR production `Crossmul` (mean) so coherence calculations stay bounded to [0, 1].
 
 #### Coherence — sliding window vs multilooked
 
