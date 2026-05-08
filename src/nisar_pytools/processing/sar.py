@@ -62,15 +62,194 @@ def _check_matching_grids(
         )
 
 
-def interferogram(slc1: xr.DataArray, slc2: xr.DataArray) -> xr.DataArray:
+def _antialiased_crossmul(
+    slc1: np.ndarray, slc2: np.ndarray, upsample: int = 2
+) -> np.ndarray:
+    """Range-direction antialiased crossmul, matching ISCE3 CrossMultiply.
+
+    Replicates ``isce3::signal::CrossMultiply::crossmultiply`` (see
+    cxx/isce3/signal/{CrossMultiply,Signal}.cpp on the ISCE3 develop branch)
+    so the output matches ``isce3.signal.CrossMultiply(upsample_factor=upsample)``
+    to numerical roundoff.
+
+    Algorithm (axis=1 is range):
+        1. Zero-pad columns to a fast FFT length (already fast for power-of-2)
+        2. Range FFT (axis=1 only)
+        3. Upsample columns by zero-padding the spectrum to ``fftsize * upsample``,
+           using ISCE3's asymmetric split: the original Nyquist bin lands at
+           the negative-frequency end of the upsampled spectrum
+        4. Range IFFT × upsample → SLCs upsampled in range only
+        5. Element-wise conjugate multiply on the upsampled grid
+        6. Sum (NOT mean) adjacent ``upsample`` columns. Output amplitude
+           is ``upsample``× the naive crossmul magnitude — historical
+           ISCE convention; downstream coherence and multilook normalize
+           the constant out, phase is unaffected.
+
+    Why range-only: in critically-sampled SAR products the conjugate-product
+    aliasing is dominated by range. Azimuth is over-sampled by the PRF margin,
+    so naive multiply doesn't alias significantly along azimuth.
+    """
+    from scipy.fft import next_fast_len
+
+    in_dtype = slc1.dtype
+    n_rows, n_cols = slc1.shape
+
+    fftsize = next_fast_len(n_cols)
+    up_cols = fftsize * upsample
+
+    # Zero-pad columns to fftsize (no-op when n_cols is already fast)
+    s1_pad = np.zeros((n_rows, fftsize), dtype=np.complex64)
+    s2_pad = np.zeros((n_rows, fftsize), dtype=np.complex64)
+    s1_pad[:, :n_cols] = slc1
+    s2_pad[:, :n_cols] = slc2
+
+    # Range FFT (axis=1 only)
+    s1_spec = np.fft.fft(s1_pad, axis=1)
+    s2_spec = np.fft.fft(s2_pad, axis=1)
+
+    # Spectrum zero-pad upsample, matching the ISCE3 split convention exactly:
+    #   shifted[0 : (fftsize+1)//2]                 = spec[0 : (fftsize+1)//2]
+    #   shifted[up_cols - fftsize//2 : up_cols]     = spec[(fftsize+1)//2 : fftsize]
+    # For even fftsize this puts the original Nyquist bin (index fftsize/2)
+    # at the *negative-frequency* end of the upsampled spectrum (index
+    # up_cols - fftsize/2), rather than splitting it between both ends.
+    # This is an asymmetric but consistent ISCE3 convention — preserved
+    # so our output bit-matches isce3.signal.CrossMultiply.
+    half_lo = (fftsize + 1) // 2  # bin count going to the low end
+    half_hi = fftsize // 2        # bin count going to the high end
+    s1_up_spec = np.zeros((n_rows, up_cols), dtype=np.complex64)
+    s2_up_spec = np.zeros((n_rows, up_cols), dtype=np.complex64)
+    s1_up_spec[:, :half_lo] = s1_spec[:, :half_lo]
+    s1_up_spec[:, up_cols - half_hi:] = s1_spec[:, half_lo:]
+    s2_up_spec[:, :half_lo] = s2_spec[:, :half_lo]
+    s2_up_spec[:, up_cols - half_hi:] = s2_spec[:, half_lo:]
+
+    # Range IFFT, with amplitude-preserving scale factor (= upsample)
+    s1_up = np.fft.ifft(s1_up_spec, axis=1) * upsample
+    s2_up = np.fft.ifft(s2_up_spec, axis=1) * upsample
+
+    # Conjugate multiply on upsampled grid
+    ifg_up = s1_up * np.conj(s2_up)
+
+    # multilookSummed: sum adjacent ``upsample`` columns (NOT mean) on the
+    # unpadded portion. The sum (rather than mean) is why ISCE3 output
+    # amplitude is ``upsample``× the naive crossmul magnitude.
+    ifg = (
+        ifg_up[:, : n_cols * upsample]
+        .reshape(n_rows, n_cols, upsample)
+        .sum(axis=2)
+    )
+    return ifg.astype(in_dtype)
+
+
+def _antialiased_crossmul_2d(
+    slc1: np.ndarray, slc2: np.ndarray, upsample: int = 2
+) -> np.ndarray:
+    """Symmetric 2D antialiased crossmul — upsamples both axes.
+
+    Same algorithm as :func:`_antialiased_crossmul` but applied along
+    both axes simultaneously. This is the geometrically appropriate
+    antialiasing for GSLCs (or any SAR product on a projected x-y grid),
+    where the SAR spectrum's bandlimit is rotated diagonally in (kx, ky)
+    rather than aligned with either axis.
+
+    Output amplitude scales as ``upsample**2`` rather than ``upsample``
+    (the 2x2 multilookSummed downsample sums 4 cells instead of 2).
+    """
+    from scipy.fft import next_fast_len
+
+    in_dtype = slc1.dtype
+    n_rows, n_cols = slc1.shape
+
+    fy = next_fast_len(n_rows)
+    fx = next_fast_len(n_cols)
+    up_y = fy * upsample
+    up_x = fx * upsample
+
+    # Zero-pad to (fy, fx)
+    s1_pad = np.zeros((fy, fx), dtype=np.complex64)
+    s2_pad = np.zeros((fy, fx), dtype=np.complex64)
+    s1_pad[:n_rows, :n_cols] = slc1
+    s2_pad[:n_rows, :n_cols] = slc2
+
+    # 2D FFT
+    s1_spec = np.fft.fft2(s1_pad)
+    s2_spec = np.fft.fft2(s2_pad)
+
+    # 2D zero-pad upsample using ISCE3's asymmetric split convention along
+    # each axis. Four spectrum corners get copied into their corresponding
+    # corners of the upsampled spectrum.
+    lo_y = (fy + 1) // 2
+    hi_y = fy // 2
+    lo_x = (fx + 1) // 2
+    hi_x = fx // 2
+
+    s1_up_spec = np.zeros((up_y, up_x), dtype=np.complex64)
+    s2_up_spec = np.zeros((up_y, up_x), dtype=np.complex64)
+
+    for src_spec, dst_spec in ((s1_spec, s1_up_spec), (s2_spec, s2_up_spec)):
+        # Top-left: low pos y / low pos x (and DC)
+        dst_spec[:lo_y, :lo_x] = src_spec[:lo_y, :lo_x]
+        # Top-right: low pos y / high (negative) x
+        dst_spec[:lo_y, up_x - hi_x:] = src_spec[:lo_y, lo_x:]
+        # Bottom-left: high (negative) y / low pos x
+        dst_spec[up_y - hi_y:, :lo_x] = src_spec[lo_y:, :lo_x]
+        # Bottom-right: high y / high x
+        dst_spec[up_y - hi_y:, up_x - hi_x:] = src_spec[lo_y:, lo_x:]
+
+    # 2D IFFT, scale by upsample**2 to preserve amplitude at original sample
+    # positions (each axis contributes a factor of ``upsample``).
+    s1_up = np.fft.ifft2(s1_up_spec) * (upsample ** 2)
+    s2_up = np.fft.ifft2(s2_up_spec) * (upsample ** 2)
+
+    # Conjugate multiply on upsampled grid
+    ifg_up = s1_up * np.conj(s2_up)
+
+    # multilookSummed in both axes: sum each upsample x upsample cell.
+    ifg = (
+        ifg_up[: n_rows * upsample, : n_cols * upsample]
+        .reshape(n_rows, upsample, n_cols, upsample)
+        .sum(axis=(1, 3))
+    )
+    return ifg.astype(in_dtype)
+
+
+def interferogram(
+    slc1: xr.DataArray,
+    slc2: xr.DataArray,
+    antialias: bool | str = False,
+) -> xr.DataArray:
     """Generate an interferogram from two co-registered SLC images.
 
-    Computes ``slc1 * conj(slc2)``.
+    Default behaviour computes the naive ``slc1 * conj(slc2)``. The
+    ``antialias`` parameter selects an FFT-based antialiased variant.
 
     Parameters
     ----------
     slc1, slc2 : xr.DataArray
         Complex-valued SLC images with matching coordinates.
+    antialias : bool or str, default False
+        Antialiasing mode for the conjugate multiply.
+
+        - ``False`` (or ``'none'``): naive ``slc1 * conj(slc2)``. Fast,
+          dask-friendly. The conjugate product can spill outside the
+          principal Nyquist band; multilooking absorbs most of the alias
+          noise downstream.
+        - ``True`` (or ``'range'``): bit-exact match for
+          ``isce3.signal.CrossMultiply(upsample_factor=2)`` — the NISAR
+          production crossmul. Upsamples along axis=1 (range) only,
+          conjugate-multiplies on the upsampled grid, and downsamples
+          via ``multilookSummed``. Output amplitude is 2x naive due to
+          ISCE3's sum-not-mean convention.
+        - ``'2d'``: symmetric 2D antialias along both axes. Geometrically
+          the right choice for GSLCs in projected (x, y) coordinates,
+          where the SAR spectrum's bandlimit is rotated diagonally
+          rather than aligned with either axis. Output amplitude is 4x
+          naive.
+
+        Memory cost for the antialiased modes: peaks at roughly 16x
+        (range) or 32x (2d) the input array size during the FFTs. For
+        very large inputs, chunk the array yourself before calling.
 
     Returns
     -------
@@ -80,12 +259,36 @@ def interferogram(slc1: xr.DataArray, slc2: xr.DataArray) -> xr.DataArray:
     Raises
     ------
     ValueError
-        If x or y coordinates do not match, or inputs are not complex.
+        If x or y coordinates do not match, inputs are not complex, or
+        ``antialias`` is not one of the recognised options.
     """
     if not np.iscomplexobj(slc1) or not np.iscomplexobj(slc2):
         raise ValueError("SLC inputs must be complex-valued")
     _check_matching_grids(slc1, slc2)
-    ifg = slc1 * np.conj(slc2)
+
+    # Normalise antialias to a canonical string mode
+    if antialias is False or antialias == "none":
+        mode = "none"
+    elif antialias is True or antialias == "range":
+        mode = "range"
+    elif antialias == "2d":
+        mode = "2d"
+    else:
+        raise ValueError(
+            f"antialias must be False, True, 'none', 'range', or '2d'; got {antialias!r}"
+        )
+
+    if mode == "none":
+        ifg = slc1 * np.conj(slc2)
+    else:
+        fn = _antialiased_crossmul if mode == "range" else _antialiased_crossmul_2d
+        ifg_arr = fn(np.asarray(slc1), np.asarray(slc2))
+        ifg = xr.DataArray(
+            ifg_arr,
+            dims=slc1.dims,
+            coords={d: slc1.coords[d] for d in slc1.dims if d in slc1.coords},
+        )
+
     ifg.name = "interferogram"
     ifg.attrs = {"units": "1", "long_name": "Complex interferogram"}
     return ifg

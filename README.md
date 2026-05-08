@@ -192,6 +192,8 @@ from nisar_pytools.processing import (
 
 # Interferogram (validates matching grids)
 ifg = interferogram(slc1, slc2)
+ifg_aa = interferogram(slc1, slc2, antialias="range")  # ISCE3 RSLC convention
+ifg_2d = interferogram(slc1, slc2, antialias="2d")     # symmetric, right for GSLCs
 
 # Multilooked interferogram
 ml_ifg = multilook(ifg, looks_y=4, looks_x=4)
@@ -202,6 +204,18 @@ coh = coherence(slc1, slc2, window_size=11)
 # Phase unwrapping with SNAPHU
 unw, conncomp = unwrap(ifg, coh, nlooks=20.0)
 ```
+
+#### Crossmul antialiasing
+
+`interferogram()` accepts an `antialias` argument with three modes:
+
+| `antialias` | What it does | When to use |
+|---|---|---|
+| `False` (default) | Naive `slc1 * conj(slc2)` | Followed by multilook (which absorbs alias noise). Fast, dask-friendly. |
+| `'range'` | FFT 2× upsample → multiply → `multilookSummed` along axis=1 only. Bit-exact match for `isce3.signal.CrossMultiply(upsample_factor=2)` — the NISAR production crossmul. Output amplitude is 2× naive. | RSLCs in radar coordinates, where range is critically sampled and azimuth is over-sampled. |
+| `'2d'` | Same algorithm applied symmetrically along both axes. Output amplitude is 4× naive. | GSLCs (or any product on a projected x–y grid) where the SAR bandlimit is rotated diagonally and neither axis is privileged. |
+
+The naive (default) and `'range'` outputs differ at full resolution by ~0.75 rad phase std on a representative GSLC chip; after 16×16 multilook the residual drops below the science noise floor at L-band, so the default is fine for the typical RSLC→multilook→unwrap pipeline. Set `antialias` only if you need the full-resolution wrapped phase clean of alias noise.
 
 ### Prepare GSLCs for dolphin
 

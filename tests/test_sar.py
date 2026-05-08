@@ -160,6 +160,121 @@ class TestInterferogram:
         # s * conj(s) = |s|², which is real (imaginary part ≈ 0)
         np.testing.assert_allclose(ifg.values.imag, 0, atol=1e-5)
 
+    def test_antialias_shape_and_dtype_preserved(self):
+        slc1, slc2 = _make_slc_pair(ny=32, nx=32)
+        ifg = interferogram(slc1, slc2, antialias=True)
+        assert ifg.shape == (32, 32)
+        assert np.iscomplexobj(ifg.values)
+        np.testing.assert_array_equal(ifg.x.values, slc1.x.values)
+        np.testing.assert_array_equal(ifg.y.values, slc1.y.values)
+
+    def _make_pure_tone_pair(self, ny, nx, k1y, k1x, k2y, k2x):
+        """Build two SLCs each as a pure tone at integer-cycle frequencies.
+
+        Integer cycles per array (f = k/N) means the discrete signal is
+        exactly periodic, so FFT-based reconstruction is bit-exact and
+        spectral leakage is zero. This isolates aliasing behaviour from
+        FFT edge effects.
+        """
+        y = np.arange(ny)[:, None]
+        x = np.arange(nx)[None, :]
+        s1 = np.exp(2j * np.pi * (k1y * y / ny + k1x * x / nx)).astype(np.complex64)
+        s2 = np.exp(2j * np.pi * (k2y * y / ny + k2x * x / nx)).astype(np.complex64)
+        coords = {"y": np.arange(ny, dtype=float), "x": np.arange(nx, dtype=float)}
+        return (xr.DataArray(s1, dims=["y", "x"], coords=coords),
+                xr.DataArray(s2, dims=["y", "x"], coords=coords))
+
+    def test_antialias_matches_2x_naive_when_no_aliasing_and_zero_dk(self):
+        # Two identical-frequency tones (Δk = 0) → conjugate product is a
+        # constant. The half-sample shift in ISCE3's sum-not-mean convention
+        # has zero effect at Δk=0, so the antialias output is exactly 2x
+        # the naive one (both amplitude AND phase match).
+        ny, nx = 64, 64
+        slc1, slc2 = self._make_pure_tone_pair(ny, nx, k1y=3, k1x=2, k2y=3, k2x=2)
+        ifg_naive = interferogram(slc1, slc2)
+        ifg_aa = interferogram(slc1, slc2, antialias=True)
+        np.testing.assert_allclose(
+            ifg_aa.values, 2 * ifg_naive.values, atol=1e-4
+        )
+
+    def test_antialias_amplitude_is_2x_naive_for_low_freq(self):
+        # For a small Δk (well below Nyquist), the antialias amplitude
+        # is approximately 2x naive (within cos(π·Δk/N) ~ 0.999).
+        ny, nx = 64, 64
+        slc1, slc2 = self._make_pure_tone_pair(ny, nx, k1y=3, k1x=2, k2y=2, k2x=1)
+        ifg_naive = interferogram(slc1, slc2)
+        ifg_aa = interferogram(slc1, slc2, antialias=True)
+        # Δk=1 in each axis → amplitude ratio = 2*cos(π/64) ≈ 1.998
+        ratio = np.abs(ifg_aa.values) / np.abs(ifg_naive.values)
+        np.testing.assert_allclose(ratio, 2 * np.cos(np.pi / nx), atol=1e-2)
+
+    def test_antialias_string_aliases(self):
+        # Verify the bool / string equivalences route to the same paths.
+        slc1, slc2 = _make_slc_pair()
+        np.testing.assert_array_equal(
+            interferogram(slc1, slc2, antialias=False).values,
+            interferogram(slc1, slc2, antialias="none").values,
+        )
+        np.testing.assert_array_equal(
+            interferogram(slc1, slc2, antialias=True).values,
+            interferogram(slc1, slc2, antialias="range").values,
+        )
+
+    def test_antialias_invalid_value_raises(self):
+        slc1, slc2 = _make_slc_pair()
+        with pytest.raises(ValueError, match="antialias must be"):
+            interferogram(slc1, slc2, antialias="banana")
+
+    def test_antialias_2d_amplitude_is_4x_naive_for_low_freq(self):
+        # 2D antialias sums upsample x upsample = 4 cells, so for a
+        # small Δk the output amplitude is approximately 4x naive.
+        ny, nx = 64, 64
+        slc1, slc2 = self._make_pure_tone_pair(ny, nx, k1y=3, k1x=2, k2y=2, k2x=1)
+        ifg_naive = interferogram(slc1, slc2)
+        ifg_2d = interferogram(slc1, slc2, antialias="2d")
+        # Δk=(1,1) → ratio ≈ (2*cos(π/64))^2 ≈ 3.99
+        ratio = np.abs(ifg_2d.values) / np.abs(ifg_naive.values)
+        expected = (2 * np.cos(np.pi / nx)) * (2 * np.cos(np.pi / ny))
+        np.testing.assert_allclose(ratio, expected, atol=2e-2)
+
+    def test_antialias_2d_matches_4x_naive_when_dk_zero(self):
+        # Identical-frequency tones (Δk = 0) → no half-sample shift.
+        # 2D antialias output is exactly 4x naive (real, no phase shift).
+        ny, nx = 64, 64
+        slc1, slc2 = self._make_pure_tone_pair(ny, nx, k1y=3, k1x=2, k2y=3, k2x=2)
+        ifg_naive = interferogram(slc1, slc2)
+        ifg_2d = interferogram(slc1, slc2, antialias="2d")
+        np.testing.assert_allclose(
+            ifg_2d.values, 4 * ifg_naive.values, atol=1e-3
+        )
+
+    def test_antialias_2d_differs_from_range(self):
+        # Real SLCs (random phase): 2D and range-only antialias produce
+        # different outputs because they suppress aliasing along
+        # different axes.
+        slc1 = _make_slc(ny=64, nx=64, seed=1)
+        slc2 = _make_slc(ny=64, nx=64, seed=2)
+        ifg_range = interferogram(slc1, slc2, antialias="range")
+        ifg_2d = interferogram(slc1, slc2, antialias="2d")
+        diff = np.abs(ifg_range.values - ifg_2d.values)
+        assert diff.mean() > 0.0  # not identical
+        # Trivial sanity: 2D output should generally be larger in magnitude
+        # (4x vs 2x scaling for low-freq content)
+        assert np.abs(ifg_2d.values).mean() > np.abs(ifg_range.values).mean()
+
+    def test_antialias_differs_from_naive_when_aliasing_occurs(self):
+        # k1 + |k2| = 26 + 26 = 52 cycles per 64 samples > Nyquist (=32).
+        # The conjugate-product f1 - (-f2) = 52 cycles/64 aliases under
+        # naive multiplication; antialias path captures the unaliased
+        # signal and rejects it during the spectral crop, so the two
+        # outputs diverge meaningfully.
+        ny, nx = 64, 64
+        slc1, slc2 = self._make_pure_tone_pair(ny, nx, k1y=0, k1x=26, k2y=0, k2x=-26)
+        ifg_naive = interferogram(slc1, slc2)
+        ifg_aa = interferogram(slc1, slc2, antialias=True)
+        diff = np.abs(ifg_naive.values - ifg_aa.values)
+        assert diff.mean() > 0.1
+
 
 class TestCoherence:
     def test_identical_slcs_give_one(self):
