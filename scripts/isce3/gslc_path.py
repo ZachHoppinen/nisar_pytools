@@ -52,15 +52,24 @@ OUT_PATH = Path("scripts/isce3/output/gslc_path.h5")
 
 
 def _open_chip(path: str, pol: str = "HH") -> xr.DataArray:
-    """Open a GSLC and crop to the shared AOI."""
+    """Open a GSLC and crop to the shared AOI, materializing the chip
+    before the DataTree (which owns the h5py file handle) goes out of
+    scope. Returns an in-memory DataArray with no h5py references.
+    """
     dt = open_nisar(path)
-    slc = dt["science/LSAR/GSLC/grids/frequencyA"].dataset[pol]
-    # GSLCs share the same UTM grid by construction (each geocoded with the
-    # same scene-level bbox by the JPL processor), so a coordinate-based
-    # slice on both products lands on the same pixels.
-    return slc.sel(
-        x=slice(TOP_LEFT_X, BOT_RIGHT_X),
-        y=slice(TOP_LEFT_Y, BOT_RIGHT_Y),
+    slc = (
+        dt["science/LSAR/GSLC/grids/frequencyA"]
+        .dataset[pol]
+        .sel(x=slice(TOP_LEFT_X, BOT_RIGHT_X), y=slice(TOP_LEFT_Y, BOT_RIGHT_Y))
+    )
+    # Compute now while the underlying h5py file handle is still alive.
+    arr = np.asarray(slc.values)
+    return xr.DataArray(
+        arr,
+        dims=slc.dims,
+        coords={d: slc.coords[d].values for d in slc.dims if d in slc.coords},
+        name=slc.name,
+        attrs=dict(slc.attrs),
     )
 
 
@@ -68,8 +77,8 @@ def main():
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
 
     print("Opening GSLCs and cropping to AOI...")
-    slc1 = _open_chip(GSLC_REF).compute()
-    slc2 = _open_chip(GSLC_SEC).compute()
+    slc1 = _open_chip(GSLC_REF)
+    slc2 = _open_chip(GSLC_SEC)
     print(f"  chip shape: {slc1.shape}  posting: 5 m")
     if slc1.shape != slc2.shape:
         raise SystemExit(f"GSLCs are not co-registered: {slc1.shape} vs {slc2.shape}")

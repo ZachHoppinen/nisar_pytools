@@ -1,7 +1,9 @@
-"""Compare the locally-produced GUNW against the JPL-produced reference GUNW.
+"""Comprehensive band-by-band stats: local isce3 GUNW vs JPL GUNW.
 
-Compares unwrapped phase, coherence, and split-spectrum ionosphere phase
-screen on the matched valid mask. Prints per-pixel mean / std / rms residuals.
+Prints per-pixel mean / std / rms residuals for every comparable band
+(unwrapped phase, coherence, connected components, ionosphere screen,
+ionosphere uncertainty). Text-only output -- pair with ``plot_two_way.py``
+for visualization of the unwrapped phase + ionosphere bands.
 
 Usage:
     /Users/zmhoppinen/miniforge3/envs/nisar_pytools/bin/python scripts/isce3/compare_gunw.py

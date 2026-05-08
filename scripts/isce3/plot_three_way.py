@@ -5,7 +5,7 @@ plots them side by side. The pedagogical point: identical inputs (same SAR
 acquisitions, same scene), three very different processor stacks, three
 unwrapped phase maps. How close do they agree?
 
-Saves: scripts/isce3/output/compare_three_way.png
+Saves: figures/isce3_comparisons/three_way.png
 """
 
 from pathlib import Path
@@ -24,7 +24,8 @@ JPL = Path(
 RSLC_GUNW = Path("scripts/isce3/output/product.h5")  # from nisar.workflows.insar
 GSLC_PATH = Path("scripts/isce3/output/gslc_path.h5")  # from gslc_path.py
 
-OUT = Path("scripts/isce3/output/compare_three_way.png")
+OUT = Path("figures/isce3_comparisons/three_way.png")
+OUT_SCATTER = Path("figures/isce3_comparisons/three_way_scatter.png")
 
 POL = "HH"
 FREQ = "frequencyA"
@@ -63,6 +64,50 @@ def _imshow(ax, arr, title, vlim=None, cmap="RdBu_r"):
     ax.set_xticks([])
     ax.set_yticks([])
     return im
+
+
+def _fit_metrics(ref, ours):
+    """R², RMSE, Pearson r between paired arrays. Ignores NaNs."""
+    valid = np.isfinite(ref) & np.isfinite(ours)
+    x = ref[valid]
+    y = ours[valid]
+    if x.size < 2:
+        return float("nan"), float("nan"), float("nan")
+    rmse = float(np.sqrt(np.mean((y - x) ** 2)))
+    ss_tot = float(np.sum((x - x.mean()) ** 2))
+    ss_res = float(np.sum((y - x) ** 2))
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
+    pearson = float(np.corrcoef(x, y)[0, 1]) if x.std() > 0 and y.std() > 0 else float("nan")
+    return r2, rmse, pearson
+
+
+def _scatter_panel(ax, ref, ours, xlabel, ylabel, title, units=""):
+    """Density scatter (hexbin) of (ref vs ours) with 1:1 line and metrics."""
+    valid = np.isfinite(ref) & np.isfinite(ours)
+    x = ref[valid]
+    y = ours[valid]
+
+    ax.hexbin(x, y, gridsize=80, cmap="viridis", mincnt=1, bins="log")
+
+    lo = float(min(x.min(), y.min()))
+    hi = float(max(x.max(), y.max()))
+    ax.plot([lo, hi], [lo, hi], "r-", lw=1, alpha=0.7, label="1:1")
+
+    r2, rmse, pearson = _fit_metrics(ref, ours)
+    txt = f"R² = {r2:.4f}\nPearson r = {pearson:.4f}\nRMSE = {rmse:.4f} {units}"
+    ax.text(
+        0.04, 0.96, txt, transform=ax.transAxes, va="top", ha="left",
+        fontsize=9,
+        bbox=dict(facecolor="white", alpha=0.85, edgecolor="0.5"),
+    )
+
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
+    ax.set_aspect("equal", adjustable="box")
+    ax.set_xlim(lo, hi)
+    ax.set_ylim(lo, hi)
+    ax.legend(loc="lower right", fontsize=8)
 
 
 def main():
@@ -124,6 +169,7 @@ def main():
 
     fig.suptitle("Three-way GUNW comparison (80 x 80 km AOI, frequencyA HH)")
     fig.tight_layout()
+    OUT.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(OUT, dpi=130, bbox_inches="tight")
     print(f"Wrote {OUT}")
 
@@ -142,6 +188,52 @@ def main():
     stats("coherence: GSLC-path vs JPL", coh_gslc, coh_jpl)
     stats("coherence: RSLC-path vs JPL", coh_rslc, coh_jpl)
     stats("coherence: GSLC-path vs RSLC-path", coh_gslc, coh_rslc)
+
+    # --- scatter plots: each path vs JPL (the reference), 2 bands x 2 paths ---
+    fig2, sax = plt.subplots(2, 2, figsize=(12, 12))
+    _scatter_panel(
+        sax[0, 0], unw_jpl.ravel(), unw_gslc.ravel(),
+        xlabel="JPL unwrapped phase (rad)",
+        ylabel="GSLC-path unwrapped phase (rad)",
+        title="Unwrapped phase: GSLC-path vs JPL",
+        units="rad",
+    )
+    _scatter_panel(
+        sax[0, 1], unw_jpl.ravel(), unw_rslc.ravel(),
+        xlabel="JPL unwrapped phase (rad)",
+        ylabel="RSLC-path unwrapped phase (rad)",
+        title="Unwrapped phase: RSLC-path vs JPL",
+        units="rad",
+    )
+    _scatter_panel(
+        sax[1, 0], coh_jpl.ravel(), coh_gslc.ravel(),
+        xlabel="JPL coherence",
+        ylabel="GSLC-path coherence",
+        title="Coherence: GSLC-path vs JPL",
+    )
+    _scatter_panel(
+        sax[1, 1], coh_jpl.ravel(), coh_rslc.ravel(),
+        xlabel="JPL coherence",
+        ylabel="RSLC-path coherence",
+        title="Coherence: RSLC-path vs JPL",
+    )
+    fig2.suptitle("GSLC-path and RSLC-path vs JPL GUNW (median-removed phase)")
+    fig2.tight_layout()
+    fig2.savefig(OUT_SCATTER, dpi=130, bbox_inches="tight")
+    print(f"Wrote {OUT_SCATTER}")
+
+    # --- fit metrics summary ---
+    print("\nFit metrics (each path vs JPL):")
+    pairs = [
+        ("unwrapped: GSLC-path vs JPL", unw_jpl, unw_gslc),
+        ("unwrapped: RSLC-path vs JPL", unw_jpl, unw_rslc),
+        ("coherence: GSLC-path vs JPL", coh_jpl, coh_gslc),
+        ("coherence: RSLC-path vs JPL", coh_jpl, coh_rslc),
+    ]
+    for name, ref, ours in pairs:
+        r2, rmse, pearson = _fit_metrics(ref, ours)
+        print(f"  {name:34s}  R²={r2:>+7.4f}   "
+              f"Pearson r={pearson:>+7.4f}   RMSE={rmse:.4f}")
 
 
 if __name__ == "__main__":
