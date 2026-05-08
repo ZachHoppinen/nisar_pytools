@@ -1,0 +1,84 @@
+# Adapted from local/gslcs/NISAR_L2_PR_GSLC_004_077_..._X05009_..._001.rc.yaml
+# (the JPL runconfig that produced our reference GSLC).
+#
+# Differences from the JPL run:
+#   - input_file_path -> local RSLC
+#   - dem_file -> our cached Copernicus 30 m DEM (scripts/isce3/inputs/dem.tif)
+#   - orbit_file: null (use RSLC-embedded orbit)
+#   - tec_file: null (no iono geolocation correction -- we don't have the TEC ANC)
+#   - corner_reflector_file: null (not needed for the experiment)
+#   - geocode bbox: cropped to 80 x 80 km AOI (matches our InSAR run)
+#   - output paths under scripts/isce3/output_gslc/
+runconfig:
+    name: NISAR_GSLC_RUNCONFIG
+    groups:
+        pge_name_group:
+            pge_name: GSLC_L_PGE
+        input_file_group:
+            input_file_path: /Users/zmhoppinen/Documents/nisar_pytools/local/rslc/NISAR_L1_PR_RSLC_004_077_A_024_4005_DHDH_A_20251103T124615_20251103T124650_X05009_N_F_J_001.h5
+            qa_input_file: scripts/isce3/output_gslc/gslc.h5
+        dynamic_ancillary_file_group:
+            dem_file: /Users/zmhoppinen/Documents/nisar_pytools/scripts/isce3/inputs/dem.tif
+            orbit_file:
+            tec_file:
+            reference_gslc:
+            corner_reflector_file:
+        product_path_group:
+            product_path: scripts/isce3/output_gslc
+            scratch_path: scripts/isce3/scratch_gslc
+            sas_output_file: scripts/isce3/output_gslc/gslc.h5
+            product_counter: 1
+            qa_output_dir: scripts/isce3/output_gslc/qa
+        primary_executable:
+            product_type: GSLC
+            product_version: 1.0.2
+            composite_release_id: X05009
+            processing_type: PR
+            product_accuracy: N
+            processing_center: J
+            data_source: A
+            partial_granule_id: NISAR_L2_PR_GSLC_004_077_A_024_{MODE}_{POLE}_A_{StartDateTime}_{EndDateTime}_X05009_N_F_J_001
+        debug_level_group:
+            debug_switch: false
+        processing:
+            input_subset:
+                list_of_frequencies:
+            dem_download:
+                source:
+                top_left:
+                    x:
+                    y:
+                bottom_right:
+                    x:
+                    y:
+            geocode:
+                output_posting:
+                    A:
+                        x_posting: 5
+                        y_posting: 5
+                    B:
+                        x_posting: 40
+                        y_posting: 5
+                output_epsg: 32611
+                # Cropped to the 80 x 80 km AOI used elsewhere in this work
+                top_left:
+                    y_abs: 4964080.0
+                    x_abs: 464000.0
+                bottom_right:
+                    y_abs: 4884080.0
+                    x_abs: 544000.0
+            blocksize:
+                x: 2000
+                y: 2000
+            flatten: true
+        worker:
+            internet_access: false
+            gpu_enabled: false
+            gpu_id:
+        qa:
+            workflows:
+                validate: false
+                qa_reports: false
+        logging:
+            path: scripts/isce3/scratch_gslc/gslc.log
+            write_mode: a

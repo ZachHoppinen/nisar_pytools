@@ -5,7 +5,9 @@ local/
 # Only commit the runconfig + python/sh scripts under scripts/isce3/.
 scripts/isce3/inputs/
 scripts/isce3/output/
+scripts/isce3/output_gslc/
 scripts/isce3/scratch/
+scripts/isce3/scratch_gslc/
 
 # Generic guard: any data file types that shouldn't be in git
 *.h5
@@ -13,6 +15,7 @@ scripts/isce3/scratch/
 *.tiff
 *.vrt
 *.rdr
+*.hdr
 *.slc
 *.unw
 *.cor

@@ -22,6 +22,15 @@ neither x nor y is privileged. The ISCE3 production crossmul is range-only
 suppresses aliasing on a GSLC. After 16x16 multilooking the difference
 is below noise floor either way.
 
+No flat-earth removal step: NISAR GSLCs are already deramped during
+geocoding (the geocoder subtracts the carrier phase ``-4 pi R / lambda``
+at each ground point). So the conjugate product of two GSLCs has the
+orbit-induced flat-earth phase already cancelled -- subtracting an
+additional ``4 pi / lambda * B_par`` would over-correct. The small
+residual versus the JPL GUNW (~0.3 rad N/S ramp) is from solid-earth
+tides, troposphere, and ionosphere -- corrections that JPL applies and
+the GSLC path can't reach.
+
 Output: scripts/isce3/output/gslc_path.h5
 """
 
