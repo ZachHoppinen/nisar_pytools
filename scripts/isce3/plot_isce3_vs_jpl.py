@@ -1,10 +1,12 @@
-"""Two-way comparison plot: our local isce3 RSLC->GUNW vs JPL GUNW.
+"""Comparison plot: our local isce3 RSLC->GUNW vs production JPL GUNW.
 
-Produces a 2x3 figure:
-    row 1: unwrapped phase  -- ours / JPL / residual
-    row 2: ionosphere screen -- ours / JPL / residual
+Produces:
+    figures/isce3_comparisons/isce3_vs_jpl.png         (image side-by-side)
+    figures/isce3_comparisons/isce3_vs_jpl_scatter.png (density scatter + metrics)
 
-Saves to figures/isce3_comparisons/two_way.png
+Bands compared: unwrapped phase + ionosphere phase screen (both have a
+global 2pi / zero-reference ambiguity, so per-product medians are
+subtracted before comparison).
 """
 
 from pathlib import Path
@@ -21,8 +23,8 @@ JPL = Path(
     "20251115T124615_20251115T124650_"
     "X05010_N_F_J_001.h5"
 )
-OUT = Path("figures/isce3_comparisons/two_way.png")
-OUT_SCATTER = Path("figures/isce3_comparisons/two_way_scatter.png")
+OUT = Path("figures/isce3_comparisons/isce3_vs_jpl.png")
+OUT_SCATTER = Path("figures/isce3_comparisons/isce3_vs_jpl_scatter.png")
 
 POL = "HH"
 FREQ = "frequencyA"
