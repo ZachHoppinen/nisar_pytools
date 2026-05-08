@@ -25,6 +25,19 @@ dependencies:
   - twine
   - jupyter
   - matplotlib
+  # ISCE3 + nisar.workflows.insar runtime stack (used by
+  # nisar_pytools.processing.rslc_to_gunw). isce3 and the GDAL HDF5 plugin
+  # are conda-forge-only; the rest are also on PyPI via the [isce3] extras.
+  # NB: 'snaphu' is already pinned above as a core dep.
+  - isce3>=0.25
+  - libgdal-hdf5
+  - pygrib>=2.1
+  - pyaps3>=0.2
+  - raider>=0.5
+  - pysolid>=0.3
+  - netcdf4>=1.5
+  - pyyaml>=6.0
+  - dem_stitcher
   - pip
   - pip:
       - -e .

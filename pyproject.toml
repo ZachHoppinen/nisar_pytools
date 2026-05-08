@@ -31,6 +31,7 @@ dependencies = [
     "h5py>=3.10",
     "numpy>=1.24",
     "pyproj>=3.4",
+    "pyyaml>=6.0",
     "rasterio>=1.3",
     "requests",
     "rioxarray>=0.15",
@@ -46,7 +47,18 @@ dem = [
 ]
 dolphin = [
     "dolphin-sar",
-    "pyyaml>=6.0",
+]
+isce3 = [
+    # PyPI-installable runtime deps for nisar.workflows.insar
+    # (used by nisar_pytools.processing.rslc_to_gunw).
+    # The isce3 binding itself + libgdal-hdf5 are conda-forge only --
+    # see the rslc_to_gunw docstring for the full mamba command.
+    "snaphu>=0.4",
+    "pygrib>=2.1",
+    "pyaps3>=0.3",
+    "RAiDER>=0.6",
+    "pysolid>=0.3",
+    "netCDF4>=1.6",
 ]
 dev = [
     "build",
@@ -77,6 +89,9 @@ Issues = "https://github.com/zmhoppinen/nisar_pytools/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"nisar_pytools.processing" = ["*.yaml"]
 
 [tool.setuptools_scm]
 # Version is derived from git tags (e.g. v0.2.0). Between tags

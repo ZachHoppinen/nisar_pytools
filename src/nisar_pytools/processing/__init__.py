@@ -5,6 +5,7 @@ from nisar_pytools.processing.atmospheric import (
     correct_troposphere,
 )
 from nisar_pytools.processing.filtering import goldstein_filter
+from nisar_pytools.processing.isce3_tools import rslc_to_gunw
 from nisar_pytools.processing.prep_dolphin import crop_gslc_to_tif, prep_dolphin
 from nisar_pytools.processing.phase_linking import (
     emi,
@@ -54,5 +55,6 @@ __all__ = [
     "multilook_interferogram",
     "phase_link",
     "prep_dolphin",
+    "rslc_to_gunw",
     "unwrap",
 ]

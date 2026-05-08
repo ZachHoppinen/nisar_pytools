@@ -33,6 +33,7 @@ With optional extras:
 pip install nisar-pytools[dem]       # DEM fetching (dem_stitcher)
 pip install nisar-pytools[dolphin]   # dolphin InSAR time-series prep
 pip install nisar-pytools[viz]       # Visualization (matplotlib)
+pip install nisar-pytools[isce3]     # PyPI bits of the isce3 RSLC->GUNW stack
 pip install nisar-pytools[all]       # Everything
 ```
 
@@ -42,6 +43,17 @@ git clone https://github.com/zmhoppinen/nisar_pytools.git
 cd nisar_pytools
 mamba env create -f environment.yml
 conda activate nisar_pytools
+```
+
+The bundled `environment.yml` installs the full **ISCE3 RSLC → GUNW stack**
+(`isce3`, `libgdal-hdf5`, `snaphu`, `pygrib`, `pyaps3`, `raider`, `pysolid`,
+`netcdf4`, `dem_stitcher`) from conda-forge. Both `isce3` and `libgdal-hdf5`
+are conda-forge-only, so a pure-pip install can't reach them — if you're
+not using the conda env, install them yourself:
+
+```sh
+mamba install -c conda-forge isce3 libgdal-hdf5
+pip install 'nisar-pytools[isce3]'
 ```
 
 ## Usage - Command Line
@@ -96,6 +108,33 @@ nisar_pytools info NISAR_L2_PR_GUNW_...h5
 # Same fields, machine-readable
 nisar_pytools info NISAR_L2_PR_GSLC_...h5 --json
 ```
+
+### RSLC → GUNW (production InSAR pipeline)
+
+Wrapper around `nisar.workflows.insar` (the production isce3 InSAR
+workflow) that takes an RSLC pair and produces a GUNW. Requires the
+isce3 stack (see Installation above).
+
+```bash
+# Minimal: auto-fetch DEM, auto-detect UTM zone + bbox, production-spec runconfig
+nisar_pytools rslc-to-gunw ref.h5 sec.h5 --output-dir gunw_run/
+
+# Bring your own DEM + crop output to a smaller AOI in UTM 11N
+nisar_pytools rslc-to-gunw ref.h5 sec.h5 \
+    --output-dir gunw_run/ \
+    --dem dem.tif \
+    --bbox 464000 4884080 544000 4964080 \
+    --epsg 32611
+
+# Use a custom runconfig (overrides the bundled default)
+nisar_pytools rslc-to-gunw ref.h5 sec.h5 --output-dir gunw_run/ --runconfig my.yaml
+
+# Force a full re-run, ignoring previously-cached step outputs
+nisar_pytools rslc-to-gunw ref.h5 sec.h5 --output-dir gunw_run/ --restart
+```
+
+Outputs `gunw_run/product.h5` (the GUNW), with intermediates and the
+log under `gunw_run/scratch/`. Multi-hour wall time on CPU.
 
 
 ## Usage - Python
@@ -236,6 +275,68 @@ coh_aa = multilook_coherence(slc1, slc2, looks_y=16, looks_x=5, antialias="range
 ```
 
 `coherence()` is for visualization and analysis at full SLC resolution. `multilook_coherence()` produces the same estimator on the multilooked grid that the ISCE3 GUNW reports — numerator and denominator are kept consistent (both mean-based, both share the same multilook factors), so values stay bounded to [0, 1] regardless of antialias mode.
+
+### RSLC → GUNW (production InSAR pipeline)
+
+`rslc_to_gunw` wraps `nisar.workflows.insar` to take an L1 RSLC pair and
+produce an L2 GUNW. The bundled `environment.yml` installs the full
+isce3 stack; users on a custom env need at minimum:
+
+```sh
+mamba install -c conda-forge isce3 libgdal-hdf5 snaphu pygrib pyaps3 raider pysolid netcdf4
+pip install 'nisar-pytools[isce3]'   # for the rest via pip if you skip mamba
+```
+
+Minimal call — auto-fetches a Copernicus 30 m DEM, auto-detects the UTM
+zone + bbox from the reference RSLC, applies the bundled production-spec
+runconfig (JPL X05010 settings, 5×6 / 13×16 looks, full coregistration,
+split-spectrum ionosphere on, troposphere off):
+
+```python
+from nisar_pytools.processing import rslc_to_gunw
+
+gunw = rslc_to_gunw(
+    reference_rslc="NISAR_L1_PR_RSLC_..._20251103...h5",
+    secondary_rslc="NISAR_L1_PR_RSLC_..._20251115...h5",
+    output_dir="gunw_run/",
+)
+print(gunw)  # gunw_run/product.h5
+```
+
+More control — supply your own DEM, crop the output, and tweak processing
+parameters via the merged-with-defaults `overrides` dict:
+
+```python
+gunw = rslc_to_gunw(
+    "ref.h5", "sec.h5", "gunw_run/",
+    dem_file="dem.tif",
+    aoi_bbox_utm=(464000, 4884080, 544000, 4964080),  # (xmin, ymin, xmax, ymax)
+    output_epsg=32611,
+    overrides={"runconfig": {"groups": {"processing": {
+        # Faster + lower-res run: bigger looks, no rubbersheet
+        "crossmul":      {"range_looks": 10, "azimuth_looks": 12},
+        "phase_unwrap":  {"range_looks": 26, "azimuth_looks": 32},
+        "rubbersheet":   {"enabled": False},
+        "fine_resample": {"enabled": False},
+    }}}},
+)
+```
+
+Or pass an entirely user-supplied runconfig (paths and AOI bbox are still
+auto-injected on top):
+
+```python
+gunw = rslc_to_gunw("ref.h5", "sec.h5", "gunw_run/", runconfig="my_runconfig.yaml")
+```
+
+Outputs land in `gunw_run/`:
+
+- `product.h5` — the GUNW
+- `runconfig.yaml` — the resolved runconfig actually fed to the workflow
+- `scratch/` — intermediate RIFG/RUNW HDF5s, rdr2geo cache, log
+
+Set `restart=True` to ignore cached step outputs and re-run from
+scratch (forwarded to `nisar.workflows.persistence.Persistence`).
 
 ### Prepare GSLCs for dolphin
 

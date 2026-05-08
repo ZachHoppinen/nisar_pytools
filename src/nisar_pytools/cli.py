@@ -831,6 +831,28 @@ def cmd_info(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
+# `rslc-to-gunw` subcommand
+# ---------------------------------------------------------------------------
+
+def cmd_rslc_to_gunw(args: argparse.Namespace) -> None:
+    """Implementation of the ``rslc-to-gunw`` subcommand."""
+    from nisar_pytools.processing import rslc_to_gunw
+
+    bbox = tuple(args.bbox) if args.bbox else None  # type: ignore[assignment]
+    out = rslc_to_gunw(
+        reference_rslc=args.reference_rslc,
+        secondary_rslc=args.secondary_rslc,
+        output_dir=args.output_dir,
+        runconfig=args.runconfig,
+        dem_file=args.dem,
+        aoi_bbox_utm=bbox,
+        output_epsg=args.epsg,
+        restart=args.restart,
+    )
+    print(f"GUNW: {out}")
+
+
+# ---------------------------------------------------------------------------
 # Parser
 # ---------------------------------------------------------------------------
 
@@ -838,11 +860,35 @@ _TOP_DESCRIPTION = """\
 Command-line tools for working with NISAR HDF5 products.
 
 Subcommands:
-  to-geotiff   Convert GUNW / GSLC HDF5 bands into GeoTIFFs.
-  info         Print a summary (product type, track/frame, times, pols,
-               grids, coherence stats) for a GUNW or GSLC HDF5 file.
+  to-geotiff    Convert GUNW / GSLC HDF5 bands into GeoTIFFs.
+  info          Print a summary (product type, track/frame, times, pols,
+                grids, coherence stats) for a GUNW or GSLC HDF5 file.
+  rslc-to-gunw  Run nisar.workflows.insar on an RSLC pair and produce
+                a GUNW (requires isce3 + nisar in a separate env).
 
 Run `nisar_pytools <subcommand> --help` for subcommand-specific help.
+"""
+
+_RSLC_TO_GUNW_DESCRIPTION = """\
+Process a NISAR L1 RSLC pair into a NISAR L2 GUNW using
+``nisar.workflows.insar`` (the production isce3-based InSAR workflow).
+
+Requires the optional ``[isce3]`` dep group plus conda-installed
+``isce3`` and ``libgdal-hdf5``. Recommended install:
+  mamba install -c conda-forge isce3 libgdal-hdf5 snaphu-py pygrib pyaps3 raider pysolid netcdf4
+
+If --runconfig is omitted, a bundled production-spec default is used
+(JPL X05010 settings: 5x6 crossmul, 13x16 unwrap, full coregistration,
+split-spectrum ionosphere correction enabled, troposphere disabled).
+Paths, EPSG, and bbox are filled in at runtime.
+
+If --dem is omitted, a Copernicus 30 m DEM covering the reference RSLC's
+bounding polygon is fetched via dem_stitcher.
+
+If --epsg / --bbox are omitted, the UTM zone is derived from the scene
+centroid and the bbox is the full RSLC extent in that projection.
+
+Multi-hour wall time on CPU.
 """
 
 _INFO_DESCRIPTION = """\
@@ -1077,6 +1123,44 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit JSON instead of formatted text. Numeric stats stay as floats.",
     )
     p_info.set_defaults(func=cmd_info)
+
+    # rslc-to-gunw subcommand --------------------------------------------
+    p_r2g = sub.add_parser(
+        "rslc-to-gunw",
+        help="Run nisar.workflows.insar on an RSLC pair and produce a GUNW.",
+        description=_RSLC_TO_GUNW_DESCRIPTION,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_r2g.add_argument("reference_rslc", help="Path to the reference NISAR L1 RSLC HDF5 file.")
+    p_r2g.add_argument("secondary_rslc", help="Path to the secondary NISAR L1 RSLC HDF5 file.")
+    p_r2g.add_argument(
+        "--output-dir", required=True,
+        help="Directory for the output GUNW + scratch files. Created if missing.",
+    )
+    p_r2g.add_argument(
+        "--runconfig",
+        help="Optional YAML runconfig. If omitted, the bundled production-spec default "
+             "is used and filled in with paths/bbox/EPSG at runtime.",
+    )
+    p_r2g.add_argument(
+        "--dem",
+        help="Optional DEM raster (TIF or VRT). If omitted, fetched via dem_stitcher.",
+    )
+    p_r2g.add_argument(
+        "--bbox", nargs=4, type=float, metavar=("XMIN", "YMIN", "XMAX", "YMAX"),
+        help="Output geocode bbox in projected (UTM) coordinates. "
+             "If omitted, defaults to the reference RSLC's bounding polygon.",
+    )
+    p_r2g.add_argument(
+        "--epsg", type=int,
+        help="Output EPSG code. If omitted, picks the UTM zone of the scene centroid.",
+    )
+    p_r2g.add_argument(
+        "--restart", action="store_true",
+        help="Re-run all workflow steps even if their outputs exist "
+             "(passed through to nisar.workflows.persistence).",
+    )
+    p_r2g.set_defaults(func=cmd_rslc_to_gunw)
     return parser
 
 
