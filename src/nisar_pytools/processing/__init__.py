@@ -25,6 +25,7 @@ from nisar_pytools.processing.sar import (
     coherence,
     interferogram,
     multilook,
+    multilook_coherence,
     multilook_interferogram,
     unwrap,
 )
@@ -49,6 +50,7 @@ __all__ = [
     "interferogram",
     "mean_alpha",
     "multilook",
+    "multilook_coherence",
     "multilook_interferogram",
     "phase_link",
     "prep_dolphin",

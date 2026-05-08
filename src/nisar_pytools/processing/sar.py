@@ -65,25 +65,27 @@ def _check_matching_grids(
 def _antialiased_crossmul(
     slc1: np.ndarray, slc2: np.ndarray, upsample: int = 2
 ) -> np.ndarray:
-    """Range-direction antialiased crossmul, matching ISCE3 CrossMultiply.
+    """Range-direction antialiased crossmul matching production NISAR Crossmul.
 
-    Replicates ``isce3::signal::CrossMultiply::crossmultiply`` (see
-    cxx/isce3/signal/{CrossMultiply,Signal}.cpp on the ISCE3 develop branch)
-    so the output matches ``isce3.signal.CrossMultiply(upsample_factor=upsample)``
-    to numerical roundoff.
+    Replicates the algorithm in ``isce3::signal::Crossmul`` (file
+    cxx/isce3/signal/Crossmul.cpp on the develop branch — the class the
+    NISAR L2 ``crossmul`` workflow actually invokes via ``isce3.signal.Crossmul``).
+    Note: this is *not* identical to the simpler ``isce3.signal.CrossMultiply``
+    class, which uses ``multilookSummed`` for the antialias downsample and
+    therefore produces 2x-amplitude output. The production Crossmul uses
+    ``sum / oversample`` (mean), giving 1x-amplitude output that's directly
+    comparable with naive crossmul.
 
     Algorithm (axis=1 is range):
-        1. Zero-pad columns to a fast FFT length (already fast for power-of-2)
+        1. Zero-pad columns to a fast FFT length
         2. Range FFT (axis=1 only)
         3. Upsample columns by zero-padding the spectrum to ``fftsize * upsample``,
            using ISCE3's asymmetric split: the original Nyquist bin lands at
            the negative-frequency end of the upsampled spectrum
         4. Range IFFT × upsample → SLCs upsampled in range only
         5. Element-wise conjugate multiply on the upsampled grid
-        6. Sum (NOT mean) adjacent ``upsample`` columns. Output amplitude
-           is ``upsample``× the naive crossmul magnitude — historical
-           ISCE convention; downstream coherence and multilook normalize
-           the constant out, phase is unaffected.
+        6. Mean of adjacent ``upsample`` columns ("reclaim the extra oversample
+           looks across", Crossmul.cpp:340).
 
     Why range-only: in critically-sampled SAR products the conjugate-product
     aliasing is dominated by range. Azimuth is over-sampled by the PRF margin,
@@ -131,13 +133,14 @@ def _antialiased_crossmul(
     # Conjugate multiply on upsampled grid
     ifg_up = s1_up * np.conj(s2_up)
 
-    # multilookSummed: sum adjacent ``upsample`` columns (NOT mean) on the
-    # unpadded portion. The sum (rather than mean) is why ISCE3 output
-    # amplitude is ``upsample``× the naive crossmul magnitude.
+    # Mean of adjacent ``upsample`` columns: matches the Crossmul.cpp
+    # "Reclaim the extra oversample looks across" loop (line 340 in
+    # the develop branch) where ifgram = sum / ov.  Output amplitude
+    # is ~1x naive (not 2x like CrossMultiply.cpp's multilookSummed).
     ifg = (
         ifg_up[:, : n_cols * upsample]
         .reshape(n_rows, n_cols, upsample)
-        .sum(axis=2)
+        .mean(axis=2)
     )
     return ifg.astype(in_dtype)
 
@@ -153,8 +156,8 @@ def _antialiased_crossmul_2d(
     where the SAR spectrum's bandlimit is rotated diagonally in (kx, ky)
     rather than aligned with either axis.
 
-    Output amplitude scales as ``upsample**2`` rather than ``upsample``
-    (the 2x2 multilookSummed downsample sums 4 cells instead of 2).
+    Output amplitude is ~1x naive (the 2x2 cell mean preserves amplitude
+    at the original sample positions for low-frequency content).
     """
     from scipy.fft import next_fast_len
 
@@ -205,11 +208,12 @@ def _antialiased_crossmul_2d(
     # Conjugate multiply on upsampled grid
     ifg_up = s1_up * np.conj(s2_up)
 
-    # multilookSummed in both axes: sum each upsample x upsample cell.
+    # Mean of each upsample x upsample cell (matches Crossmul.cpp's mean-based
+    # antialias downsample, generalized symmetrically to 2D).
     ifg = (
         ifg_up[: n_rows * upsample, : n_cols * upsample]
         .reshape(n_rows, upsample, n_cols, upsample)
-        .sum(axis=(1, 3))
+        .mean(axis=(1, 3))
     )
     return ifg.astype(in_dtype)
 
@@ -235,17 +239,17 @@ def interferogram(
           dask-friendly. The conjugate product can spill outside the
           principal Nyquist band; multilooking absorbs most of the alias
           noise downstream.
-        - ``True`` (or ``'range'``): bit-exact match for
-          ``isce3.signal.CrossMultiply(upsample_factor=2)`` — the NISAR
-          production crossmul. Upsamples along axis=1 (range) only,
-          conjugate-multiplies on the upsampled grid, and downsamples
-          via ``multilookSummed``. Output amplitude is 2x naive due to
-          ISCE3's sum-not-mean convention.
+        - ``True`` (or ``'range'``): matches ``isce3.signal.Crossmul`` —
+          the production NISAR crossmul (file cxx/isce3/signal/Crossmul.cpp).
+          Upsamples along axis=1 (range), conjugate-multiplies on the
+          upsampled grid, and downsamples by averaging adjacent cells.
+          Output amplitude is ~1x naive. (Note: this differs from the
+          simpler ``isce3.signal.CrossMultiply`` class, which sums instead
+          of averages and therefore gives 2x amplitude.)
         - ``'2d'``: symmetric 2D antialias along both axes. Geometrically
           the right choice for GSLCs in projected (x, y) coordinates,
-          where the SAR spectrum's bandlimit is rotated diagonally
-          rather than aligned with either axis. Output amplitude is 4x
-          naive.
+          where the SAR spectrum's bandlimit is rotated diagonally rather
+          than aligned with either axis. Output amplitude is ~1x naive.
 
         Memory cost for the antialiased modes: peaks at roughly 16x
         (range) or 32x (2d) the input array size during the FFTs. For
@@ -478,6 +482,80 @@ def coherence(
         attrs={"units": "1", "long_name": "Interferometric coherence magnitude"},
     )
     return result
+
+
+def multilook_coherence(
+    slc1: xr.DataArray,
+    slc2: xr.DataArray,
+    looks_y: int,
+    looks_x: int,
+    antialias: bool | str = False,
+) -> xr.DataArray:
+    """Coherence on the multilooked grid, ISCE3 production convention.
+
+    Computes::
+
+        γ = |multilook(s1 · conj(s2))| / sqrt(multilook(|s1|²) · multilook(|s2|²))
+
+    where each ``multilook`` is a non-overlapping mean over
+    ``(looks_y, looks_x)`` pixel blocks. The output lives on the multilooked
+    grid (downsampled by the look factors), matching what
+    ``nisar.workflows.crossmul`` writes into the RIFG ``coherenceMagnitude``
+    band.
+
+    This is the ISCE3 production-style estimator. Compare with
+    :func:`coherence`, which produces a sliding-window estimate at the
+    full SLC resolution.
+
+    Parameters
+    ----------
+    slc1, slc2 : xr.DataArray
+        Complex-valued SLC images with matching coordinates.
+    looks_y, looks_x : int
+        Multilook factors. Output grid has shape ``(ny // looks_y, nx // looks_x)``.
+    antialias : bool or str, default False
+        Forwarded to :func:`interferogram`. Set to ``'range'`` (matches
+        production NISAR Crossmul) or ``'2d'`` (symmetric, right for GSLCs)
+        to suppress full-resolution alias noise before multilooking.
+        Numerator and denominator scale consistently regardless of mode,
+        so coherence stays in [0, 1].
+
+    Returns
+    -------
+    xr.DataArray
+        Coherence magnitude on the multilooked grid, dtype float32.
+    """
+    if not np.iscomplexobj(slc1) or not np.iscomplexobj(slc2):
+        raise ValueError("SLC inputs must be complex-valued")
+    _check_matching_grids(slc1, slc2)
+
+    ifg = interferogram(slc1, slc2, antialias=antialias)
+    pow1 = xr.DataArray(
+        (np.abs(np.asarray(slc1)) ** 2).astype(np.float32),
+        dims=slc1.dims,
+        coords={d: slc1.coords[d] for d in slc1.dims if d in slc1.coords},
+    )
+    pow2 = xr.DataArray(
+        (np.abs(np.asarray(slc2)) ** 2).astype(np.float32),
+        dims=slc2.dims,
+        coords={d: slc2.coords[d] for d in slc2.dims if d in slc2.coords},
+    )
+
+    ifg_ml = multilook(ifg, looks_y=looks_y, looks_x=looks_x)
+    pow1_ml = multilook(pow1, looks_y=looks_y, looks_x=looks_x)
+    pow2_ml = multilook(pow2, looks_y=looks_y, looks_x=looks_x)
+
+    denom = np.sqrt(np.asarray(pow1_ml) * np.asarray(pow2_ml))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        coh_arr = np.where(denom > 0, np.abs(np.asarray(ifg_ml)) / denom, 0.0)
+
+    return xr.DataArray(
+        coh_arr.astype(np.float32),
+        dims=ifg_ml.dims,
+        coords=ifg_ml.coords,
+        name="coherence",
+        attrs={"units": "1", "long_name": "Multilooked interferometric coherence"},
+    )
 
 
 def unwrap(

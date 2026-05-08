@@ -1,16 +1,18 @@
 """Numerical sanity check: four crossmul paths on the same NISAR GSLC chip.
 
 Compares:
-    naive        = slc1 * conj(slc2)               (interferogram() default)
-    isce3_up1    = CrossMultiply(upsample=1)       (matches naive bit-for-bit)
-    isce3_up2    = CrossMultiply(upsample=2)       (NISAR production crossmul)
-    nisar_pytools_aa = interferogram(antialias=True)  (our FFT-based path)
+    naive            = slc1 * conj(slc2)               (interferogram() default)
+    isce3_up1        = CrossMultiply(upsample=1)       (matches naive bit-for-bit)
+    isce3_up2        = CrossMultiply(upsample=2)       (sum-based downsample, 2x amplitude)
+    nisar_pytools_aa = interferogram(antialias=True)   (our path, mean-based, 1x amplitude)
 
-Goals:
-    - confirm naive == isce3_up1 to roundoff (it does; isce3 short-circuits at up=1)
-    - confirm nisar_pytools_aa == isce3_up2 to roundoff (we want this -- proves our
-      FFT-upsample/multiply/downsample matches ISCE3's algorithm exactly)
-    - quantify how much the antialias upsample changes the per-pixel IFG vs naive
+Note: ``isce3.signal.CrossMultiply`` (CrossMultiply.cpp) uses ``multilookSummed``
+for the antialias downsample, giving 2x amplitude. The actual production
+NISAR ``crossmul`` workflow uses ``isce3.signal.Crossmul`` (Crossmul.cpp),
+which uses ``sum / oversample`` (mean) and gives 1x amplitude. Our path
+matches Crossmul, so output = isce3_up2 / 2 in amplitude, identical phase.
+``isce3.signal.Crossmul`` requires file-backed Rasters so isn't tested
+directly here -- we infer parity from the phase + scaled-amplitude match.
 
 Run with the isce3 env (so isce3 + nisar_pytools both importable):
     /Users/zmhoppinen/miniforge3/envs/isce3/bin/python scripts/isce3/verify_crossmul.py
@@ -101,19 +103,23 @@ def main():
     print("Computing nisar_pytools antialias path (FFT upsample x2)...")
     nisar_aa = _antialiased_crossmul(slc1, slc2)
 
+    # production Crossmul output is CrossMultiply / upsample (mean vs sum)
+    isce3_production = isce3_up2 / 2
+
     print("\nPairwise residuals:")
-    _residual("naive            vs  isce3 up=1", naive, isce3_up1)
-    _residual("naive            vs  isce3 up=2", naive, isce3_up2)
-    _residual("isce3 up=1       vs  isce3 up=2", isce3_up1, isce3_up2)
-    _residual("nisar_pytools_aa vs  isce3 up=2", nisar_aa, isce3_up2)
-    _residual("nisar_pytools_aa vs  naive       ", nisar_aa, naive)
+    _residual("naive            vs  isce3 up=1            ", naive, isce3_up1)
+    _residual("naive            vs  isce3 up=2 (sum)      ", naive, isce3_up2)
+    _residual("isce3 up=1       vs  isce3 up=2 (sum)      ", isce3_up1, isce3_up2)
+    _residual("nisar_pytools_aa vs  isce3 up=2 / 2 (mean) ", nisar_aa, isce3_production)
+    _residual("nisar_pytools_aa vs  naive                 ", nisar_aa, naive)
 
     print("\nInterpretation:")
     print("  - naive vs up=1: bit-exact (isce3 short-circuits to plain s1 * conj(s2)).")
-    print("  - nisar_pytools_aa vs isce3 up=2: bit-exact (our impl mirrors")
-    print("    isce3::signal::CrossMultiply::crossmultiply algorithm).")
-    print("  - up=1 vs up=2 quantifies the alias suppression: phase residual std")
-    print("    ~0.75 rad at full resolution, dropping ~16x after 16x16 multilook.")
+    print("  - nisar_pytools_aa vs isce3_up2/2: ~roundoff in phase, scaled match in")
+    print("    amplitude. Confirms our impl matches production isce3.signal.Crossmul")
+    print("    (mean-based downsample), differing from isce3.signal.CrossMultiply")
+    print("    (sum-based) by exactly 1/upsample in amplitude.")
+    print("  - up=1 vs up=2 quantifies the alias suppression at full res.")
 
 
 if __name__ == "__main__":

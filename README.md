@@ -212,10 +212,30 @@ unw, conncomp = unwrap(ifg, coh, nlooks=20.0)
 | `antialias` | What it does | When to use |
 |---|---|---|
 | `False` (default) | Naive `slc1 * conj(slc2)` | Followed by multilook (which absorbs alias noise). Fast, dask-friendly. |
-| `'range'` | FFT 2× upsample → multiply → `multilookSummed` along axis=1 only. Bit-exact match for `isce3.signal.CrossMultiply(upsample_factor=2)` — the NISAR production crossmul. Output amplitude is 2× naive. | RSLCs in radar coordinates, where range is critically sampled and azimuth is over-sampled. |
-| `'2d'` | Same algorithm applied symmetrically along both axes. Output amplitude is 4× naive. | GSLCs (or any product on a projected x–y grid) where the SAR bandlimit is rotated diagonally and neither axis is privileged. |
+| `'range'` | FFT 2× upsample → multiply → mean-of-pairs along axis=1 only. Matches the production NISAR `crossmul` workflow (`isce3.signal.Crossmul`) to numerical roundoff. Output amplitude is ~1× naive. | RSLCs in radar coordinates, where range is critically sampled and azimuth is over-sampled. |
+| `'2d'` | Same algorithm applied symmetrically along both axes. Output amplitude is ~1× naive. | GSLCs (or any product on a projected x–y grid) where the SAR bandlimit is rotated diagonally and neither axis is privileged. |
 
 The naive (default) and `'range'` outputs differ at full resolution by ~0.75 rad phase std on a representative GSLC chip; after 16×16 multilook the residual drops below the science noise floor at L-band, so the default is fine for the typical RSLC→multilook→unwrap pipeline. Set `antialias` only if you need the full-resolution wrapped phase clean of alias noise.
+
+> Note: `isce3.signal.CrossMultiply` (a separate, simpler ISCE3 class with a numpy-array API) uses `multilookSummed` instead of mean and gives 2× amplitude. We deliberately match the production `Crossmul` (mean) so coherence calculations stay bounded to [0, 1].
+
+#### Coherence — sliding window vs multilooked
+
+Two coherence functions for two use cases:
+
+```python
+from nisar_pytools.processing import coherence, multilook_coherence
+
+# Sliding-window estimate at SLC resolution (boxcar or gaussian)
+coh = coherence(slc1, slc2, window_size=11)
+
+# ISCE3 production-style: non-overlapping mean blocks, output on the
+# multilooked grid -- matches RIFG/RUNW/GUNW coherenceMagnitude bands
+coh_ml = multilook_coherence(slc1, slc2, looks_y=16, looks_x=5)
+coh_aa = multilook_coherence(slc1, slc2, looks_y=16, looks_x=5, antialias="range")
+```
+
+`coherence()` is for visualization and analysis at full SLC resolution. `multilook_coherence()` produces the same estimator on the multilooked grid that the ISCE3 GUNW reports — numerator and denominator are kept consistent (both mean-based, both share the same multilook factors), so values stay bounded to [0, 1] regardless of antialias mode.
 
 ### Prepare GSLCs for dolphin
 

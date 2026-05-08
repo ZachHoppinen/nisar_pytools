@@ -9,6 +9,7 @@ from nisar_pytools.processing.sar import (
     coherence,
     interferogram,
     multilook,
+    multilook_coherence,
     multilook_interferogram,
     unwrap,
 )
@@ -184,29 +185,24 @@ class TestInterferogram:
         return (xr.DataArray(s1, dims=["y", "x"], coords=coords),
                 xr.DataArray(s2, dims=["y", "x"], coords=coords))
 
-    def test_antialias_matches_2x_naive_when_no_aliasing_and_zero_dk(self):
+    def test_antialias_matches_naive_when_no_aliasing_and_zero_dk(self):
         # Two identical-frequency tones (Δk = 0) → conjugate product is a
-        # constant. The half-sample shift in ISCE3's sum-not-mean convention
-        # has zero effect at Δk=0, so the antialias output is exactly 2x
-        # the naive one (both amplitude AND phase match).
+        # constant. With production Crossmul's mean-based antialias the
+        # output is exactly equal to naive (1x amplitude, no phase shift).
         ny, nx = 64, 64
         slc1, slc2 = self._make_pure_tone_pair(ny, nx, k1y=3, k1x=2, k2y=3, k2x=2)
         ifg_naive = interferogram(slc1, slc2)
         ifg_aa = interferogram(slc1, slc2, antialias=True)
-        np.testing.assert_allclose(
-            ifg_aa.values, 2 * ifg_naive.values, atol=1e-4
-        )
+        np.testing.assert_allclose(ifg_aa.values, ifg_naive.values, atol=1e-4)
 
-    def test_antialias_amplitude_is_2x_naive_for_low_freq(self):
-        # For a small Δk (well below Nyquist), the antialias amplitude
-        # is approximately 2x naive (within cos(π·Δk/N) ~ 0.999).
+    def test_antialias_amplitude_close_to_naive_for_low_freq(self):
+        # Mean-based antialias: ratio ≈ cos(π·Δk/N) (one factor instead of two).
         ny, nx = 64, 64
         slc1, slc2 = self._make_pure_tone_pair(ny, nx, k1y=3, k1x=2, k2y=2, k2x=1)
         ifg_naive = interferogram(slc1, slc2)
         ifg_aa = interferogram(slc1, slc2, antialias=True)
-        # Δk=1 in each axis → amplitude ratio = 2*cos(π/64) ≈ 1.998
         ratio = np.abs(ifg_aa.values) / np.abs(ifg_naive.values)
-        np.testing.assert_allclose(ratio, 2 * np.cos(np.pi / nx), atol=1e-2)
+        np.testing.assert_allclose(ratio, np.cos(np.pi / nx), atol=1e-2)
 
     def test_antialias_string_aliases(self):
         # Verify the bool / string equivalences route to the same paths.
@@ -225,28 +221,24 @@ class TestInterferogram:
         with pytest.raises(ValueError, match="antialias must be"):
             interferogram(slc1, slc2, antialias="banana")
 
-    def test_antialias_2d_amplitude_is_4x_naive_for_low_freq(self):
-        # 2D antialias sums upsample x upsample = 4 cells, so for a
-        # small Δk the output amplitude is approximately 4x naive.
+    def test_antialias_2d_amplitude_close_to_naive_for_low_freq(self):
+        # Mean-based 2D antialias: ratio ≈ cos(π·Δky/Ny) · cos(π·Δkx/Nx).
         ny, nx = 64, 64
         slc1, slc2 = self._make_pure_tone_pair(ny, nx, k1y=3, k1x=2, k2y=2, k2x=1)
         ifg_naive = interferogram(slc1, slc2)
         ifg_2d = interferogram(slc1, slc2, antialias="2d")
-        # Δk=(1,1) → ratio ≈ (2*cos(π/64))^2 ≈ 3.99
         ratio = np.abs(ifg_2d.values) / np.abs(ifg_naive.values)
-        expected = (2 * np.cos(np.pi / nx)) * (2 * np.cos(np.pi / ny))
+        expected = np.cos(np.pi / nx) * np.cos(np.pi / ny)
         np.testing.assert_allclose(ratio, expected, atol=2e-2)
 
-    def test_antialias_2d_matches_4x_naive_when_dk_zero(self):
+    def test_antialias_2d_matches_naive_when_dk_zero(self):
         # Identical-frequency tones (Δk = 0) → no half-sample shift.
-        # 2D antialias output is exactly 4x naive (real, no phase shift).
+        # Mean-based 2D antialias output equals naive (1x amplitude).
         ny, nx = 64, 64
         slc1, slc2 = self._make_pure_tone_pair(ny, nx, k1y=3, k1x=2, k2y=3, k2x=2)
         ifg_naive = interferogram(slc1, slc2)
         ifg_2d = interferogram(slc1, slc2, antialias="2d")
-        np.testing.assert_allclose(
-            ifg_2d.values, 4 * ifg_naive.values, atol=1e-3
-        )
+        np.testing.assert_allclose(ifg_2d.values, ifg_naive.values, atol=1e-3)
 
     def test_antialias_2d_differs_from_range(self):
         # Real SLCs (random phase): 2D and range-only antialias produce
@@ -258,9 +250,6 @@ class TestInterferogram:
         ifg_2d = interferogram(slc1, slc2, antialias="2d")
         diff = np.abs(ifg_range.values - ifg_2d.values)
         assert diff.mean() > 0.0  # not identical
-        # Trivial sanity: 2D output should generally be larger in magnitude
-        # (4x vs 2x scaling for low-freq content)
-        assert np.abs(ifg_2d.values).mean() > np.abs(ifg_range.values).mean()
 
     def test_antialias_differs_from_naive_when_aliasing_occurs(self):
         # k1 + |k2| = 26 + 26 = 52 cycles per 64 samples > Nyquist (=32).
@@ -375,6 +364,46 @@ class TestCoherence:
         slc1, slc2 = _make_slc_pair()
         with pytest.raises(ValueError, match="method must be"):
             coherence(slc1, slc2, window_size=5, method="hamming")
+
+
+class TestMultilookCoherence:
+    def test_identical_slcs_give_one(self):
+        slc = _make_slc(ny=32, nx=40)
+        coh = multilook_coherence(slc, slc, looks_y=4, looks_x=4)
+        # Identical signals should give γ = 1 (mod numerical roundoff)
+        np.testing.assert_allclose(coh.values, 1.0, atol=1e-5)
+
+    def test_output_shape_is_multilooked(self):
+        slc1, slc2 = _make_slc_pair(ny=32, nx=40)
+        coh = multilook_coherence(slc1, slc2, looks_y=4, looks_x=4)
+        assert coh.shape == (32 // 4, 40 // 4)
+
+    def test_output_approximately_in_unit_interval(self):
+        # Random independent SLCs: coherence should be ~ 1/sqrt(N_looks)
+        # for fully decorrelated signals, with finite-N bias allowing a
+        # small overshoot above 1 at very low look count. Allow up to 1.05.
+        slc1 = _make_slc(ny=32, nx=40, seed=1)
+        slc2 = _make_slc(ny=32, nx=40, seed=2)
+        coh = multilook_coherence(slc1, slc2, looks_y=4, looks_x=4)
+        assert (coh.values >= 0).all()
+        assert (coh.values <= 1.05).all()
+
+    def test_antialias_does_not_blow_up_coherence(self):
+        # With production Crossmul's mean-based antialias, numerator and
+        # denominator scale consistently; the antialias-on coherence
+        # should be similar in distribution to antialias-off (NOT 2x or 4x
+        # bigger as a sum-based antialias would produce).
+        slc1 = _make_slc(ny=32, nx=40, seed=1)
+        slc2 = _make_slc(ny=32, nx=40, seed=2)
+        coh = multilook_coherence(slc1, slc2, looks_y=4, looks_x=4)
+        coh_aa = multilook_coherence(slc1, slc2, looks_y=4, looks_x=4, antialias="range")
+        assert coh_aa.values.mean() < 1.5 * coh.values.mean()
+        assert (coh_aa.values <= 1.05).all()
+
+    def test_output_dtype_is_float32(self):
+        slc1, slc2 = _make_slc_pair()
+        coh = multilook_coherence(slc1, slc2, looks_y=2, looks_x=2)
+        assert coh.dtype == np.float32
 
 
 class TestUnwrap:
