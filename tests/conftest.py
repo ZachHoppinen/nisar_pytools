@@ -49,7 +49,11 @@ def _create_frequency_group(parent, name, ny, nx, polarizations=("HH", "HV")):
         ds.dims[0].attach_scale(yds)
         ds.dims[1].attach_scale(xds)
 
-    grp.create_dataset("mask", shape=(ny, nx), dtype="u1", chunks=(4, 4))
+    # Default to fully-valid mask (subswath 1) so callers that opt into
+    # valid_mask=True don't accidentally blank the synthetic data. Tests
+    # exercising the mask rule overwrite this dataset explicitly.
+    mask_arr = np.ones((ny, nx), dtype="u1")
+    grp.create_dataset("mask", data=mask_arr, chunks=(4, 4))
     proj = grp.create_dataset("projection", data=np.uint32(32611))
     proj.attrs["epsg_code"] = 32611
     proj.attrs["grid_mapping_name"] = "transverse_mercator"

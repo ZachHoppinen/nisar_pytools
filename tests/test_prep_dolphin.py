@@ -73,6 +73,14 @@ def _make_gslc_file(
             ds.dims[0].attach_scale(yds)
             ds.dims[1].attach_scale(xds)
 
+        # Real GSLCs always carry a subswath mask; without it get_slc's
+        # valid_mask=True default would either raise or blank everything.
+        # Fill with 1 (subswath 1 = valid everywhere).
+        mask = np.ones((ny, nx), dtype="u1")
+        m = grp.create_dataset("mask", data=mask, chunks=(min(4, ny), min(4, nx)))
+        m.dims[0].attach_scale(yds)
+        m.dims[1].attach_scale(xds)
+
     return fp
 
 

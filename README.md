@@ -190,14 +190,19 @@ fps = download_urls(track_77, "local/gslcs/")
 
 ```python
 from nisar_pytools import open_nisar
-from nisar_pytools.utils.metadata import get_slc, get_orbit_info, get_acquisition_time
+from nisar_pytools.utils.metadata import (
+    get_slc, get_gunw, get_orbit_info, get_acquisition_time,
+)
 
 dt = open_nisar("NISAR_L2_PR_GSLC_...h5")
 
-# Quick access to a polarization channel
-hh = get_slc(dt, polarization="HH")           # lazy, CRS set
+# Quick access to a polarization channel.
+# valid_mask=True (default) blanks pixels the product flags as invalid
+# (NaN in the returned array). Set valid_mask=False to get raw samples.
+hh = get_slc(dt, polarization="HH")                    # lazy, CRS set, masked
 hv = get_slc(dt, polarization="HV")
 hh_b = get_slc(dt, polarization="HH", frequency="frequencyB")
+hh_raw = get_slc(dt, polarization="HH", valid_mask=False)  # opt out
 
 # Metadata without navigating the tree
 print(get_acquisition_time(dt))  # 2025-11-03 12:46:15
@@ -207,6 +212,54 @@ print(hh.rio.crs)                # EPSG:32611
 # Or access the full DataTree directly
 freq_a = dt["science/LSAR/GSLC/grids/frequencyA"].dataset
 ```
+
+For GUNW products, `get_gunw` selects a variable inside a layer/polarization
+group and (by default) applies the layer mask:
+
+```python
+dt = open_nisar("NISAR_L2_PR_GUNW_...h5")
+
+# Defaults: unwrappedInterferogram/HH/unwrappedPhase, masked.
+unw = get_gunw(dt)
+
+# Other common selections:
+coh    = get_gunw(dt, variable="coherenceMagnitude")
+iono   = get_gunw(dt, variable="ionospherePhaseScreen")
+cc     = get_gunw(dt, variable="connectedComponents")
+wifg   = get_gunw(dt, variable="wrappedInterferogram",
+                  layer="wrappedInterferogram")
+offset = get_gunw(dt, variable="alongTrackOffset", layer="pixelOffsets")
+
+# Raw (unmasked) version of any of the above:
+unw_raw = get_gunw(dt, valid_mask=False)
+```
+
+#### Valid mask semantics
+
+When `valid_mask=True` (the default), invalid pixels become `NaN`.
+Integer-typed variables (e.g. `connectedComponents`, uint16) are promoted
+to float so `NaN` fits.
+
+- **GSLC** `mask` (uint8) encodes the subswath number for valid samples.
+  - `0` = at least one RSLC pixel in the interpolation window was
+    partially-focused or invalid → dropped.
+  - `1..N` = valid subswath number → kept.
+  - `255` = outside the radar acquisition extent → dropped.
+- **GUNW** `mask` (uint8) is a three-digit `WRS` integer combining a water
+  flag and the reference/secondary RSLC subswath numbers.
+  - `W` = reference water flag (1 = water, 0 = land). Water pixels are
+    **kept** — mask water separately if you need to drop it.
+  - `R` = reference RSLC subswath number; `0` means the sample is invalid
+    in the reference → dropped.
+  - `S` = secondary RSLC subswath number; `0` means the sample is invalid
+    in the secondary → dropped.
+  - `255` = fill outside the acquisition extent → dropped.
+
+  In code: kept where `(mask // 10) % 10 != 0 and mask % 10 != 0 and mask != 255`.
+
+  Each GUNW layer (`unwrappedInterferogram`, `wrappedInterferogram`,
+  `pixelOffsets`) carries its own mask on its own grid; the layer mask is
+  shared across polarizations.
 
 ### Stack GSLCs into a Time Series
 
