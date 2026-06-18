@@ -310,3 +310,19 @@ def test_cli_output_is_tiled_geotiff(gunw_h5, tmp_path):
     tif = _list_tifs(out_dir)[0]
     with rasterio.open(tif) as src:
         assert src.is_tiled is True
+
+
+def test_cli_crop_rslc_requires_bbox_and_epsg(tmp_path):
+    """--crop-rslc without --bbox/--epsg should exit before any processing."""
+    ref = tmp_path / "ref.h5"
+    sec = tmp_path / "sec.h5"
+    ref.touch()
+    sec.touch()
+    with pytest.raises(SystemExit):
+        main([
+            "rslc-to-gunw",
+            str(ref),
+            str(sec),
+            "--output-dir", str(tmp_path / "out"),
+            "--crop-rslc",
+        ])

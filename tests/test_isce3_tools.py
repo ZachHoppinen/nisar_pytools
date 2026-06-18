@@ -5,6 +5,7 @@ isce3 + a real RSLC pair; that's covered by an integration script
 (scripts/isce3/run_insar.sh), not by pytest.
 """
 
+import pytest
 import yaml
 
 from nisar_pytools.processing.isce3_tools import (
@@ -161,6 +162,119 @@ class TestRunconfigInjection:
         assert g["processing"]["crossmul"]["range_looks"] == 10
         # Untouched defaults preserved
         assert g["processing"]["crossmul"]["azimuth_looks"] == 6
+
+
+def _run_rslc_to_gunw_mocked(tmp_path, monkeypatch, **kwargs):
+    """Run rslc_to_gunw with isce3 + DEM fetch stubbed out, then return the
+    runconfig dict it wrote to disk. Lets tests inspect injection without a
+    real (multi-hour, isce3-dependent) workflow run."""
+    from unittest.mock import MagicMock
+
+    from nisar_pytools.processing import isce3_tools
+
+    ref = tmp_path / "ref.h5"
+    sec = tmp_path / "sec.h5"
+    dem = tmp_path / "dem.tif"
+    for f in (ref, sec, dem):
+        f.touch()
+    out_dir = tmp_path / "out"
+
+    # Stub the workflow imports so the test env doesn't need isce3 installed.
+    fake_insar = MagicMock()
+    fake_runcfg_inst = MagicMock()
+    fake_runcfg_inst.cfg = {"logging": {"path": str(out_dir / "scratch/insar.log")}}
+    fake_runcfg_cls = MagicMock(return_value=fake_runcfg_inst)
+    fake_persistence_inst = MagicMock(run=True)
+    fake_persistence_cls = MagicMock(return_value=fake_persistence_inst)
+    fake_h5_prep = MagicMock()
+    fake_h5_prep.get_products_and_paths.return_value = (None, {"GUNW": str(out_dir / "product.h5")})
+    # insar.run writes the expected output so rslc_to_gunw's existence check passes.
+    fake_insar.run = lambda cfg, out_paths, run_steps: (out_dir / "product.h5").touch()
+
+    monkeypatch.setattr(
+        isce3_tools, "_import_insar_workflow",
+        lambda: (fake_insar, fake_runcfg_cls, fake_persistence_cls, fake_h5_prep),
+    )
+
+    isce3_tools.rslc_to_gunw(ref, sec, out_dir, dem_file=dem, **kwargs)
+    with open(out_dir / "runconfig.yaml") as f:
+        return yaml.safe_load(f)
+
+
+class TestRadarGridCubes:
+    """The radar_grid_cubes group must be geocoded onto the same AOI extent
+    and EPSG as the interferogram, so the geometry/metadata cubes (slant
+    range, incidence angle, LOS vectors, baseline, ...) co-register with the
+    unwrapped phase instead of falling back to isce3's full-scene default."""
+
+    def test_cubes_match_geocode_extent_and_epsg(self, tmp_path, monkeypatch):
+        bbox = (100000.0, 4000000.0, 200000.0, 4100000.0)  # xmin, ymin, xmax, ymax
+        cfg = _run_rslc_to_gunw_mocked(
+            tmp_path, monkeypatch, aoi_bbox_utm=bbox, output_epsg=32611,
+        )
+        proc = cfg["runconfig"]["groups"]["processing"]
+        geocode = proc["geocode"]
+        cubes = proc["radar_grid_cubes"]
+
+        # EPSG and extent are injected (not left null) ...
+        assert cubes["output_epsg"] == 32611
+        assert cubes["top_left"] == {"x_abs": 100000.0, "y_abs": 4100000.0}
+        assert cubes["bottom_right"] == {"x_abs": 200000.0, "y_abs": 4000000.0}
+        # ... and exactly match the geocode grid the interferogram uses.
+        assert cubes["output_epsg"] == geocode["output_epsg"]
+        assert cubes["top_left"] == geocode["top_left"]
+        assert cubes["bottom_right"] == geocode["bottom_right"]
+
+
+class TestCrop:
+    """crop=True should crop the RSLC pair first and run the workflow on the
+    cropped files. The actual crop is mocked here (no real RSLC needed)."""
+
+    def test_crop_requires_bbox_and_epsg(self, tmp_path, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from nisar_pytools.processing import isce3_tools
+
+        ref, sec, dem = tmp_path / "ref.h5", tmp_path / "sec.h5", tmp_path / "d.tif"
+        for f in (ref, sec, dem):
+            f.touch()
+        monkeypatch.setattr(
+            isce3_tools, "_import_insar_workflow",
+            lambda: (MagicMock(), MagicMock(), MagicMock(), MagicMock()),
+        )
+        with pytest.raises(ValueError, match="crop=True requires"):
+            isce3_tools.rslc_to_gunw(
+                ref, sec, tmp_path / "out", dem_file=dem, crop=True,
+            )  # no aoi_bbox_utm / output_epsg
+
+    def test_crop_runs_workflow_on_cropped_pair(self, tmp_path, monkeypatch):
+        from nisar_pytools.processing import crop_rslc
+
+        captured = {}
+
+        def fake_crop_pair(ref, sec, bbox, epsg, dem, out_dir, margin, min_size):
+            captured["margin"] = margin
+            captured["min_size"] = min_size
+            out_dir.mkdir(parents=True, exist_ok=True)
+            rsub = out_dir / "ref_sub.h5"
+            ssub = out_dir / "sec_sub.h5"
+            rsub.touch()
+            ssub.touch()
+            return rsub, ssub
+
+        monkeypatch.setattr(crop_rslc, "crop_rslc_pair", fake_crop_pair)
+
+        cfg = _run_rslc_to_gunw_mocked(
+            tmp_path, monkeypatch,
+            aoi_bbox_utm=(100000.0, 4000000.0, 200000.0, 4100000.0),
+            output_epsg=32611, crop=True, crop_margin=128, crop_min_size=1024,
+        )
+        g = cfg["runconfig"]["groups"]
+        # The workflow must run on the CROPPED files, not the originals.
+        assert g["input_file_group"]["reference_rslc_file"].endswith("ref_sub.h5")
+        assert g["input_file_group"]["secondary_rslc_file"].endswith("sec_sub.h5")
+        assert captured["margin"] == 128
+        assert captured["min_size"] == 1024
 
 
 class TestImportError:

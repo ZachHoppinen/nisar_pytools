@@ -108,6 +108,9 @@ def rslc_to_gunw(
     dem_file: str | os.PathLike | None = None,
     aoi_bbox_utm: tuple[float, float, float, float] | None = None,
     output_epsg: int | None = None,
+    crop: bool = False,
+    crop_margin: int = 512,
+    crop_min_size: int = 2048,
     overrides: dict[str, Any] | None = None,
     restart: bool = False,
 ) -> Path:
@@ -140,6 +143,21 @@ def rslc_to_gunw(
     output_epsg : int, optional
         Output EPSG code. If omitted, picks the UTM zone from the RSLC scene
         centroid.
+    crop : bool, default False
+        If True, crop both RSLCs to the AOI's radar-coordinate window before
+        running the workflow (see :mod:`nisar_pytools.processing.crop_rslc`).
+        Every radar-domain step then runs on a small patch, turning a
+        multi-hour full-frame run into minutes. Requires ``aoi_bbox_utm`` and
+        ``output_epsg`` to be given explicitly (there is nothing to crop to
+        otherwise). The cropped RSLCs are written under ``output_dir/cropped/``.
+    crop_margin : int, default 512
+        Padding (in frequency-A samples / azimuth lines) added around the AOI
+        window when ``crop`` is True; absorbs coregistration search, filter
+        kernels, and reference/secondary misregistration.
+    crop_min_size : int, default 2048
+        Minimum cropped-grid span per axis when ``crop`` is True. Only binds for
+        small AOIs (for large ones ``crop_margin`` dominates); keeps the patch
+        above the processing filter footprint so tiny AOIs don't degrade.
     overrides : dict, optional
         Nested dict of runconfig overrides; merged on top of the default
         runconfig with the standard "overrides win" rule.
@@ -184,6 +202,26 @@ def rslc_to_gunw(
         dem_file = dem_path
     dem_file = Path(dem_file).resolve()
 
+    # ---- Optionally crop the RSLC pair to the AOI radar window ----------
+    # Done before the workflow so every radar-domain step (coregistration,
+    # crossmul, unwrap, ionosphere) runs on a small patch instead of the full
+    # frame. Needs an explicit bbox + EPSG -- there is no AOI to crop to
+    # otherwise.
+    if crop:
+        if aoi_bbox_utm is None or output_epsg is None:
+            raise ValueError(
+                "crop=True requires both aoi_bbox_utm and output_epsg to be set "
+                "(the AOI defines the radar window to crop to)."
+            )
+        from nisar_pytools.processing.crop_rslc import crop_rslc_pair
+
+        log.info("Cropping RSLC pair to AOI radar window (margin=%d)...", crop_margin)
+        reference_rslc, secondary_rslc = crop_rslc_pair(
+            reference_rslc, secondary_rslc, aoi_bbox_utm, output_epsg,
+            dem_file, out_dir=output_dir / "cropped", margin=crop_margin,
+            min_size=crop_min_size,
+        )
+
     # ---- Auto-detect EPSG / bbox from the reference RSLC ---------------
     if output_epsg is None or aoi_bbox_utm is None:
         from nisar_pytools import open_nisar
@@ -218,10 +256,19 @@ def rslc_to_gunw(
     g["logging"]["path"] = str(scratch_dir / "insar.log")
 
     xmin, ymin, xmax, ymax = aoi_bbox_utm
+    # top_left = NW corner (min x, max y); bottom_right = SE corner (max x, min y).
+    top_left = {"x_abs": float(xmin), "y_abs": float(ymax)}
+    bottom_right = {"x_abs": float(xmax), "y_abs": float(ymin)}
     g["processing"]["geocode"]["output_epsg"] = int(output_epsg)
-    g["processing"]["geocode"]["top_left"] = {"x_abs": float(xmin), "y_abs": float(ymax)}
-    g["processing"]["geocode"]["bottom_right"] = {"x_abs": float(xmax), "y_abs": float(ymin)}
+    g["processing"]["geocode"]["top_left"] = top_left
+    g["processing"]["geocode"]["bottom_right"] = bottom_right
+    # Geocode the radar-grid metadata cubes (geometry layers: slant range,
+    # incidence/elevation angle, LOS + along-track unit vectors, baseline)
+    # onto the same AOI extent as the interferogram so they co-register.
+    # Without this the cubes fall back to isce3's default (full-scene) grid.
     g["processing"]["radar_grid_cubes"]["output_epsg"] = int(output_epsg)
+    g["processing"]["radar_grid_cubes"]["top_left"] = dict(top_left)
+    g["processing"]["radar_grid_cubes"]["bottom_right"] = dict(bottom_right)
 
     # ---- Apply user overrides ------------------------------------------
     if overrides:

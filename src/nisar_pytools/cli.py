@@ -839,6 +839,11 @@ def cmd_rslc_to_gunw(args: argparse.Namespace) -> None:
     from nisar_pytools.processing import rslc_to_gunw
 
     bbox = tuple(args.bbox) if args.bbox else None  # type: ignore[assignment]
+    if args.crop_rslc and (bbox is None or args.epsg is None):
+        raise SystemExit(
+            "--crop-rslc requires both --bbox and --epsg (the AOI defines the "
+            "radar window to crop the RSLCs to)."
+        )
     out = rslc_to_gunw(
         reference_rslc=args.reference_rslc,
         secondary_rslc=args.secondary_rslc,
@@ -847,6 +852,9 @@ def cmd_rslc_to_gunw(args: argparse.Namespace) -> None:
         dem_file=args.dem,
         aoi_bbox_utm=bbox,
         output_epsg=args.epsg,
+        crop=args.crop_rslc,
+        crop_margin=args.crop_margin,
+        crop_min_size=args.crop_min_size,
         restart=args.restart,
     )
     print(f"GUNW: {out}")
@@ -1154,6 +1162,24 @@ def build_parser() -> argparse.ArgumentParser:
     p_r2g.add_argument(
         "--epsg", type=int,
         help="Output EPSG code. If omitted, picks the UTM zone of the scene centroid.",
+    )
+    p_r2g.add_argument(
+        "--crop-rslc", action="store_true",
+        help="Crop both RSLCs to the AOI's radar-coordinate window before "
+             "processing so every step runs on a small patch (minutes instead "
+             "of hours). Requires --bbox and --epsg. Cropped inputs are written "
+             "to <output-dir>/cropped/.",
+    )
+    p_r2g.add_argument(
+        "--crop-margin", type=int, default=512, metavar="SAMPLES",
+        help="Padding (frequency-A samples / azimuth lines) around the AOI "
+             "window when --crop-rslc is used. Default: 512.",
+    )
+    p_r2g.add_argument(
+        "--crop-min-size", type=int, default=2048, metavar="SAMPLES",
+        help="Minimum cropped-grid span per axis when --crop-rslc is used. "
+             "Only binds for small AOIs (else --crop-margin dominates); keeps "
+             "the patch above the filter footprint. Default: 2048.",
     )
     p_r2g.add_argument(
         "--restart", action="store_true",
