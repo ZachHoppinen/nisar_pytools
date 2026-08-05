@@ -24,7 +24,9 @@ dependencies:
   - nbstripout
   - pre-commit
   - pytest
-  - ruff
+  # Pinned: CI gates on `ruff check`, so an unpinned ruff turns any upstream
+  # release that adds rules into a red build on untouched code.
+  - ruff=0.15.8
   - twine
   - jupyter
   - matplotlib

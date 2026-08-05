@@ -87,7 +87,7 @@ def open_remote_rslc(
     import earthaccess
 
     _ensure_auth(auth_strategy)
-    name = granule[:-3] if granule.endswith(".h5") else granule
+    name = granule.removesuffix(".h5")
     for short_name in short_names:
         results = earthaccess.search_data(short_name=short_name, readable_granule_name=name)
         if results:
@@ -200,7 +200,7 @@ def crop_streamed(
 
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    name = granule[:-3] if granule.endswith(".h5") else granule
+    name = granule.removesuffix(".h5")
 
     skeleton = out_dir / f"{name}_skeleton.h5"
     with open_remote_rslc(granule, block_size=block_size) as remote:

@@ -118,7 +118,7 @@ def open_remote_l0b(
     import earthaccess
 
     _ensure_auth(auth_strategy)
-    name = granule[:-3] if granule.endswith(".h5") else granule
+    name = granule.removesuffix(".h5")
     for short_name in short_names:
         results = earthaccess.search_data(short_name=short_name, readable_granule_name=name)
         if results:
