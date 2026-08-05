@@ -169,6 +169,17 @@ class TestInterferogram:
         np.testing.assert_array_equal(ifg.x.values, slc1.x.values)
         np.testing.assert_array_equal(ifg.y.values, slc1.y.values)
 
+    @pytest.mark.parametrize("antialias", [False, "range", "2d"])
+    def test_crs_preserved(self, antialias):
+        pytest.importorskip("rioxarray")
+        slc1, slc2 = _make_slc_pair(ny=32, nx=32)
+        # NISAR products name the grid mapping "projection", not "spatial_ref"
+        slc1 = slc1.rio.write_crs(3413, grid_mapping_name="projection")
+        slc2 = slc2.rio.write_crs(3413, grid_mapping_name="projection")
+        ifg = interferogram(slc1, slc2, antialias=antialias)
+        assert ifg.rio.crs is not None
+        assert ifg.rio.crs.to_epsg() == 3413
+
     def _make_pure_tone_pair(self, ny, nx, k1y, k1x, k2y, k2x):
         """Build two SLCs each as a pure tone at integer-cycle frequencies.
 

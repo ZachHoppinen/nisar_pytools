@@ -49,7 +49,7 @@ def _get_epsg(
     """Get the EPSG code from a GSLC via open_nisar + get_slc."""
     key = str(h5_path)
     if key not in _epsg_cache:
-        dt = open_nisar(h5_path, chunks=None)
+        dt = open_nisar(h5_path)
         da = get_slc(dt, polarization=polarization, frequency=frequency)
         _epsg_cache[key] = da.rio.crs.to_epsg()
     return _epsg_cache[key]
@@ -96,7 +96,9 @@ def crop_gslc_to_tif(
         The output GeoTIFF path.
     """
     out_tif = Path(out_tif)
-    dt = open_nisar(h5_path, chunks=None)
+    # Open lazily so the crop happens before any pixels are read; an eager
+    # open would pull every full-size 2D dataset into memory (tens of GB).
+    dt = open_nisar(h5_path)
     da = get_slc(dt, polarization=polarization, frequency=frequency)
 
     if bbox_utm is not None:
@@ -114,7 +116,14 @@ def crop_gslc_to_tif(
             )
         log.debug("Cropped %s -> %s", full_shape, da.shape)
 
-    da = da.compute().astype(np.complex64)
+    da = da.compute()
+    # astype drops encoding, and that is where the grid_mapping pointing at the
+    # product's CRS coordinate lives, so re-attach the CRS afterwards.
+    crs = da.rio.crs
+    da = da.astype(np.complex64).rio.write_crs(crs)
+    # GDAL nodata is a single float, so the product's complex _FillValue
+    # (nan+nanj) cannot be written; drop it and let NaN pixels stay NaN.
+    da.rio.write_nodata(None, inplace=True)
     da.rio.to_raster(out_tif, dtype="complex64")
     log.info("Wrote %s  shape %s", out_tif.name, da.shape)
     return out_tif

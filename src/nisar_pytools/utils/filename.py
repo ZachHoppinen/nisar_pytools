@@ -109,6 +109,6 @@ def parse_filename(filename: str | Path) -> NISARFilenameInfo:
         frame=int(parts[7]),
         start_time=start_time,
         end_time=end_time,
-        composite_release_id=parts[-4] if not is_qa else parts[-6],
+        composite_release_id=parts[-5] if not is_qa else parts[-7],
         is_qa=is_qa,
     )

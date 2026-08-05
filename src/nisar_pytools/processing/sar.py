@@ -287,14 +287,14 @@ def interferogram(
     else:
         fn = _antialiased_crossmul if mode == "range" else _antialiased_crossmul_2d
         ifg_arr = fn(np.asarray(slc1), np.asarray(slc2))
-        ifg = xr.DataArray(
-            ifg_arr,
-            dims=slc1.dims,
-            coords={d: slc1.coords[d] for d in slc1.dims if d in slc1.coords},
-        )
+        ifg = xr.DataArray(ifg_arr, dims=slc1.dims, coords=slc1.coords)
 
     ifg.name = "interferogram"
     ifg.attrs = {"units": "1", "long_name": "Complex interferogram"}
+    # Arithmetic and DataArray construction drop encoding, and grid_mapping is
+    # what rioxarray reads the CRS from.
+    if "grid_mapping" in slc1.encoding:
+        ifg.encoding["grid_mapping"] = slc1.encoding["grid_mapping"]
     return ifg
 
 
@@ -533,12 +533,12 @@ def multilook_coherence(
     pow1 = xr.DataArray(
         (np.abs(np.asarray(slc1)) ** 2).astype(np.float32),
         dims=slc1.dims,
-        coords={d: slc1.coords[d] for d in slc1.dims if d in slc1.coords},
+        coords=slc1.coords,
     )
     pow2 = xr.DataArray(
         (np.abs(np.asarray(slc2)) ** 2).astype(np.float32),
         dims=slc2.dims,
-        coords={d: slc2.coords[d] for d in slc2.dims if d in slc2.coords},
+        coords=slc2.coords,
     )
 
     ifg_ml = multilook(ifg, looks_y=looks_y, looks_x=looks_x)

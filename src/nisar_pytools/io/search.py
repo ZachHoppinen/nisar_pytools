@@ -25,9 +25,40 @@ PRODUCT_TYPES = {
 }
 
 
+#: processing maturities NISAR collections are published at, newest first
+MATURITIES = ("provisional", "beta")
+
+
 def _url_filename(url: str) -> str:
     """Extract the filename from a URL, stripping query strings."""
     return urlparse(url).path.rsplit("/", 1)[-1]
+
+
+def _url_collection(url: str) -> str | None:
+    """Collection name from an ASF NISAR URL, or None if not encoded in it."""
+    _, _, tail = urlparse(url).path.partition("/NISAR/")
+    return tail.split("/", 1)[0] if tail else None
+
+
+def _collection_ids(product_type: str, maturity: str) -> list[str]:
+    """CMR concept IDs for one product type at one processing maturity.
+
+    Collections are named ``NISAR_L<n>_<TYPE>_<MATURITY>_V1``, so the level is
+    matched rather than hardcoded (RSLC is L1, GSLC is L2, and so on).
+    """
+    from asf_search.CMR.datasets import dataset_collections
+
+    suffix = f"_{maturity.upper()}_V1"
+    ids: list[str] = []
+    for name, concept_ids in dataset_collections["NISAR"].items():
+        if f"_{product_type}_" in name and name.endswith(suffix):
+            ids.extend(concept_ids)
+    if not ids:
+        raise ValueError(
+            f"No NISAR {product_type} collection at maturity '{maturity}'. "
+            f"Supported: {sorted(MATURITIES)}"
+        )
+    return ids
 
 
 def find_nisar(
@@ -40,6 +71,7 @@ def find_nisar(
     direction: str | None = None,
     max_results: int | None = None,
     include_qa: bool = False,
+    maturity: str | None = None,
 ) -> list[str]:
     """Search ASF for NISAR product download URLs.
 
@@ -68,6 +100,18 @@ def find_nisar(
         the final count below this number.
     include_qa : bool
         If ``True``, include QA files (``_QA_STATS.h5``). Default ``False``.
+    maturity : str, optional
+        Restrict to one processing baseline: ``"provisional"`` or ``"beta"``.
+        ``None`` (default) searches every baseline and a warning names them when
+        more than one comes back.
+
+        Note that restricting narrows the *time range*, it does not deduplicate.
+        The baselines partition the mission rather than overlapping: over a wide
+        Alaskan AOI across the whole mission, beta covers 2025-10-18 to
+        2026-01-20 and provisional 2026-06-17 to 2026-07-27, with no acquisition
+        appearing under more than one composite release ID. So asking for one
+        maturity silently drops the other's dates. Mix them only if you accept
+        that the products were processed differently.
 
     Returns
     -------
@@ -101,12 +145,17 @@ def find_nisar(
         direction_upper = None
 
     search_kwargs = dict(
-        platform=asf.PLATFORM.NISAR,
         intersectsWith=aoi_geom.wkt,
         start=start,
         end=end,
         processingLevel=PRODUCT_TYPES[pt_upper],
     )
+    if maturity is None:
+        search_kwargs["platform"] = asf.PLATFORM.NISAR
+    else:
+        # asf_search ORs platform with collections, so passing both would widen
+        # the search back to every maturity instead of narrowing it.
+        search_kwargs["collections"] = _collection_ids(pt_upper, maturity)
     if path_number is not None:
         search_kwargs["relativeOrbit"] = path_number
     if frame is not None:
@@ -129,6 +178,18 @@ def find_nisar(
     urls = [u for u in urls if _url_filename(u).endswith(".h5")]
     if not include_qa:
         urls = [u for u in urls if "_QA_" not in _url_filename(u)]
+
+    # The baselines cover different date ranges rather than reprocessing the
+    # same acquisitions, so a mixed result is real extra coverage -- but the
+    # products either side of the boundary were processed differently.
+    found = sorted({c for c in map(_url_collection, urls) if c})
+    if len(found) > 1:
+        log.warning(
+            "Results span %d processing baselines (%s). These cover different "
+            "dates and were processed differently; pass maturity= to restrict "
+            "to one, at the cost of the other's date range.",
+            len(found), ", ".join(found),
+        )
 
     log.info("Found %d URLs after filtering", len(urls))
 

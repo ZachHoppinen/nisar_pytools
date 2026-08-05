@@ -5,6 +5,9 @@ dependencies:
   - python>=3.10
   - asf_search>=7.0
   - dask>=2024.0
+  # byte-range access to remote granules (nisar_pytools.io.stream_l0b,
+  # nisar_pytools.io.stream_rslc)
+  - earthaccess>=0.11
   - h5py>=3.10
   - numpy>=1.24
   - rasterio>=1.3

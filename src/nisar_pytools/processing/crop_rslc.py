@@ -30,9 +30,11 @@ What gets cropped vs copied
 ---------------------------
 Cropped (azimuth- or range-indexed):
   - swaths/zeroDopplerTime                       (azimuth axis, shared by A & B)
-  - swaths/frequency{A,B}/{pol}                  (the SLC images)
+  - swaths/frequency{A,B}/{pol}                  (the SLC images, every
+                                                  polarization the product has)
   - swaths/frequency{A,B}/slantRange             (range axis, per frequency)
-  - swaths/frequency{A,B}/validSamplesSubSwath1  (rows subset; values shifted)
+  - swaths/frequency{A,B}/validSamplesSubSwath*  (rows subset; values shifted;
+                                                  one table per subswath)
 Copied verbatim:
   - everything else (orbit, attitude, doppler, geolocationGrid, calibration,
     identification, ...). These are coordinate-indexed lookups that the workflow
@@ -182,28 +184,62 @@ def _copy_cropped(src_ds, dst_grp, name, sl):
     return d
 
 
+def _polarizations(freq_grp):
+    """Polarization dataset names in one ``frequency{A,B}`` group.
+
+    Read from ``listOfPolarizations`` so quad-pol products crop all four
+    channels rather than an assumed HH/HV pair. Falls back to the 2D complex
+    datasets actually present. Only object headers are touched, never the image
+    chunk indices, so this stays cheap on a remote handle.
+    """
+    if "listOfPolarizations" in freq_grp:
+        return [p.decode() if isinstance(p, bytes) else str(p)
+                for p in freq_grp["listOfPolarizations"][()]]
+    return [k for k, v in freq_grp.items()
+            if isinstance(v, h5py.Dataset) and v.ndim == 2 and v.dtype.kind == "c"]
+
+
 def crop_rslc(src_h5, dst_h5, window):
     """Write a cropped copy of ``src_h5`` to ``dst_h5`` using ``window`` from
     :func:`radar_window_for_aoi`. Datasets on the azimuth/range axes are sliced;
     everything else is copied verbatim."""
-    src_h5, dst_h5 = Path(src_h5), Path(dst_h5)
+    with h5py.File(Path(src_h5), "r") as src:
+        return crop_rslc_from_handle(src, dst_h5, window)
+
+
+def crop_rslc_from_handle(src, dst_h5, window):
+    """Same crop as :func:`crop_rslc`, from an already-open source handle.
+
+    Taking a handle rather than a path lets the source be a *remote* h5py file
+    (see :mod:`nisar_pytools.io.stream_rslc`), in which case the windowed slices
+    below become byte-range reads and only the overlapping image chunks are
+    transferred. The output is identical either way.
+    """
+    dst_h5 = Path(dst_h5)
     a0, a1 = window["az"]
     # Map each frequency to its (p0, p1) range window.
     rng = {"frequencyA": window["A"], "frequencyB": window["B"]}
 
     # The exact set of swath datasets we crop (others are copied as-is).
+    # Discovered from the product rather than assumed, because polarization
+    # count and subswath count both vary between acquisition modes.
     az_only = {f"{_SWATHS}/zeroDopplerTime"}                       # 1D azimuth axis
-    img_or_valid = {}   # full path -> (slice, value_offset_for_validsamples)
+    img_or_valid = {}   # full path -> (slice, (p0, p1) for validSamples else None)
     range_axis = {}     # full path -> (p0, p1)
     for fr, (p0, p1) in rng.items():
-        for pol in ("HH", "HV"):
+        if fr not in src[_SWATHS]:
+            continue                       # single-frequency products have no B
+        freq_grp = src[f"{_SWATHS}/{fr}"]
+        for pol in _polarizations(freq_grp):
             img_or_valid[f"{_SWATHS}/{fr}/{pol}"] = ((slice(a0, a1), slice(p0, p1)), None)
-        # validSamplesSubSwath1: subset rows, and shift the stored column
+        # validSamplesSubSwath<N>: subset rows, and shift the stored column
         # indices by the range offset (they index into the range axis).
-        img_or_valid[f"{_SWATHS}/{fr}/validSamplesSubSwath1"] = ((slice(a0, a1), slice(None)), p0)
+        for name in freq_grp:
+            if name.startswith("validSamples"):
+                img_or_valid[f"{_SWATHS}/{fr}/{name}"] = ((slice(a0, a1), slice(None)), (p0, p1))
         range_axis[f"{_SWATHS}/{fr}/slantRange"] = (p0, p1)
 
-    with h5py.File(src_h5, "r") as src, h5py.File(dst_h5, "w") as dst:
+    with h5py.File(dst_h5, "w") as dst:
         # Copy root attributes.
         for k, v in src.attrs.items():
             dst.attrs[k] = v
@@ -221,14 +257,14 @@ def crop_rslc(src_h5, dst_h5, window):
                     p0, p1 = range_axis[path]
                     _copy_cropped(item, dst_grp, key, (slice(p0, p1),))
                 elif path in img_or_valid:
-                    sl, offset = img_or_valid[path]
-                    if offset is None:
+                    sl, valid_rng = img_or_valid[path]
+                    if valid_rng is None:
                         _copy_cropped(item, dst_grp, key, sl)
                     else:
                         # validSamples: shift indices into the cropped range axis
                         # and clip to the new sample range.
-                        p0, p1 = rng["frequencyA" if "frequencyA" in path else "frequencyB"]
-                        vals = item[sl].astype(np.int64) - offset
+                        p0, p1 = valid_rng
+                        vals = item[sl].astype(np.int64) - p0
                         vals = np.clip(vals, 0, p1 - p0)
                         d = dst_grp.create_dataset(key, data=vals.astype(item.dtype))
                         for ak, av in item.attrs.items():

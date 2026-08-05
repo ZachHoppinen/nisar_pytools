@@ -82,9 +82,14 @@ def _walk_group(
     datasets: dict[str, xr.Dataset] = {}
 
     # Build a dataset for this group if it contains any datasets
-    ds = _build_dataset(group, chunks, lock)
+    ds, offgrid = _build_dataset(group, chunks, lock)
     if ds is not None:
         datasets[path] = ds
+        # Variables that cannot sit on this group's grid become their own child
+        # nodes. HDF5 names are unique within a group, so these cannot collide
+        # with a real child group.
+        for name, var_ds in offgrid.items():
+            datasets[f"/{name}" if path == "/" else f"{path}/{name}"] = var_ds
     elif group.attrs:
         # Group has HDF5 attributes but no child datasets — store attrs only
         datasets[path] = xr.Dataset(attrs=_extract_attrs(group))
@@ -103,10 +108,13 @@ def _build_dataset(
     group: h5py.Group,
     chunks: dict[str, int] | str | None,
     lock: threading.Lock,
-) -> xr.Dataset | None:
+) -> tuple[xr.Dataset | None, dict[str, xr.Dataset]]:
     """Build an xr.Dataset from the datasets within a single HDF5 group.
 
-    Returns None if the group contains no datasets (only subgroups).
+    Returns ``(dataset, offgrid)``. ``dataset`` is None if the group contains no
+    datasets (only subgroups). ``offgrid`` maps variable name to a single-variable
+    Dataset for any layer that does not sit on the group's x/y grid; the caller
+    hangs these off the tree as their own nodes. See :func:`_split_offgrid_vars`.
     """
     coords_data: dict[str, np.ndarray] = {}
     coord_dim_map: dict[str, str] = {}
@@ -134,7 +142,11 @@ def _build_dataset(
             # 2D+ dataset → defer to second pass (needs coords_data populated)
             pass
 
-    # Second pass: build data variables (2D+ arrays, now that coords are known)
+    # Second pass: build data variables (2D+ arrays, now that coords are known).
+    # dim_sizes accumulates the length claimed by each dim name so that a layer
+    # on a different grid cannot redefine a name another layer already owns.
+    dim_sizes = {dim: len(arr) for dim, arr in coords_data.items()}
+
     for key in group.keys():
         item = group[key]
         if not isinstance(item, h5py.Dataset):
@@ -143,6 +155,7 @@ def _build_dataset(
             continue
 
         dims = _resolve_dims(item, coords_data, key)
+        dims = _deconflict_dims(dims, item.shape, dim_sizes, key)
         dask_chunks = _get_chunks(item, dims, chunks)
         if dask_chunks is not None:
             arr = da.from_array(item, chunks=dask_chunks, lock=lock)
@@ -156,12 +169,14 @@ def _build_dataset(
         if attrs:
             group_attrs = _extract_attrs(group)
             group_attrs.update(attrs)
-            return xr.Dataset(attrs=group_attrs)
-        return None
+            return xr.Dataset(attrs=group_attrs), {}
+        return None, {}
 
     # Merge HDF5 group attributes with scalar attrs
     group_attrs = _extract_attrs(group)
     group_attrs.update(attrs)
+
+    offgrid = _split_offgrid_vars(data_vars, coords_data)
 
     coords = dict(coords_data)
     ds = xr.Dataset(data_vars, coords=coords, attrs=group_attrs)
@@ -172,7 +187,40 @@ def _build_dataset(
         ds = ds.rio.write_crs(epsg)
         ds = ds.rio.set_spatial_dims(x_dim="x", y_dim="y")
 
-    return ds
+    return ds, {k: xr.Dataset({k: v}) for k, v in offgrid.items()}
+
+
+def _split_offgrid_vars(
+    data_vars: dict[str, xr.Variable],
+    coords_data: dict[str, np.ndarray],
+) -> dict[str, xr.Variable]:
+    """Remove and return variables that do not sit on the group's x/y grid.
+
+    Such a variable makes the whole Dataset unusable: rioxarray's Dataset-level
+    operations (``clip_box``, ``reproject``) require x and y on *every* data
+    variable and raise on the first one that lacks them.
+
+    This is not hypothetical. Provisional GSLC products size frequencyB's
+    ``inputDataExceptionMask`` from the frequencyA grid (4x too wide) while
+    attaching frequencyB's own coordinate scales to it, so the array carries no
+    valid georeferencing for the group it is stored in. Rather than drop it, the
+    caller re-homes it as its own node so the data stays reachable.
+    """
+    grid_dims = {d for d in ("x", "y") if d in coords_data}
+    if not grid_dims:
+        return {}
+
+    offgrid = {}
+    for name in list(data_vars):
+        if not grid_dims <= set(data_vars[name].dims):
+            offgrid[name] = data_vars.pop(name)
+            log.warning(
+                "%s is not on this group's x/y grid (dims %s); moving it to its "
+                "own node so the rest of the group stays usable",
+                name,
+                offgrid[name].dims,
+            )
+    return offgrid
 
 
 def _resolve_dims(
@@ -199,6 +247,47 @@ def _resolve_dims(
 
     # Fallback: match by shape
     return _dims_from_shape(dataset.shape, coords_data, var_name)
+
+
+def _deconflict_dims(
+    dims: tuple[str, ...],
+    shape: tuple[int, ...],
+    dim_sizes: dict[str, int],
+    var_name: str = "",
+) -> tuple[str, ...]:
+    """Rename any axis that would redefine the length of an existing dim.
+
+    ``dim_sizes`` maps dim name → length already claimed within the group; it is
+    updated in place. NISAR products routinely attach the xCoordinates /
+    yCoordinates dimension scales to layers on a different grid (e.g. the
+    provisional GSLC ``inputDataExceptionMask``, posted 4-8x finer than the
+    frequencyB grid it sits in). Trusting those references would make the
+    group's Dataset unbuildable, so the odd axis gets a generated name instead.
+    """
+    prefix = f"{var_name}_" if var_name else ""
+    out: list[str] = []
+
+    for axis, dim in enumerate(dims):
+        size = shape[axis]
+        if dim_sizes.get(dim, size) != size:
+            new_dim = f"{prefix}dim_{axis}"
+            while dim_sizes.get(new_dim, size) != size:
+                new_dim += "_"
+            log.warning(
+                "%s axis %d has length %d but dimension %r is already %d in this "
+                "group; naming it %r instead",
+                var_name or "dataset",
+                axis,
+                size,
+                dim,
+                dim_sizes[dim],
+                new_dim,
+            )
+            dim = new_dim
+        dim_sizes[dim] = size
+        out.append(dim)
+
+    return tuple(out)
 
 
 def _dims_from_dimension_list(

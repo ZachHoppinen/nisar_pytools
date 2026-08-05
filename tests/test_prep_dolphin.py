@@ -70,6 +70,10 @@ def _make_gslc_file(
             data = (rng.normal(size=(ny, nx)) +
                     1j * rng.normal(size=(ny, nx))).astype(np.complex64)
             ds = grp.create_dataset(pol, data=data, chunks=(min(4, ny), min(4, nx)))
+            # Real GSLCs carry a complex _FillValue, which GDAL cannot express
+            # as a nodata value.
+            ds.attrs["_FillValue"] = np.complex64(complex(np.nan, np.nan))
+            ds.attrs["grid_mapping"] = b"projection"
             ds.dims[0].attach_scale(yds)
             ds.dims[1].attach_scale(xds)
 
@@ -232,6 +236,40 @@ class TestCropGslcToTif:
         crop_gslc_to_tif(fp, out, polarization="HV")
         da = rioxarray.open_rasterio(out, masked=False).squeeze()
         assert da.shape == (NY, NX)
+
+    def test_complex_values_roundtrip(self, tmp_path):
+        """Regression: complex _FillValue made rasterio reject the write."""
+        fp = _make_gslc_file(tmp_path)
+        out = tmp_path / "roundtrip.tif"
+        crop_gslc_to_tif(fp, out)
+        with h5py.File(fp, "r") as f:
+            expected = f["science/LSAR/GSLC/grids/frequencyA/HH"][()]
+        da = rioxarray.open_rasterio(out, masked=False).squeeze()
+        assert da.dtype == np.complex64
+        np.testing.assert_array_equal(da.values, expected)
+
+    def test_reads_are_chunked(self, tmp_path, monkeypatch):
+        """Regression: an eager open read every full 2D dataset into memory.
+
+        On a real GSLC a single full-array read is ~22 GB, so assert that no
+        one HDF5 read covers the whole grid.
+        """
+        fp = _make_gslc_file(tmp_path)
+        out = tmp_path / "chunked.tif"
+
+        orig_getitem = h5py.Dataset.__getitem__
+        read_sizes = []
+
+        def spy(self, key):
+            result = orig_getitem(self, key)
+            if getattr(result, "ndim", 0) >= 2:
+                read_sizes.append(result.size)
+            return result
+
+        monkeypatch.setattr(h5py.Dataset, "__getitem__", spy)
+        crop_gslc_to_tif(fp, out)
+        assert read_sizes
+        assert max(read_sizes) < NY * NX
 
     def test_no_overlap_raises(self, tmp_path):
         fp = _make_gslc_file(tmp_path)

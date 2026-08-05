@@ -133,6 +133,34 @@ class TestDownloadUrls:
         assert out.is_dir()
         assert len(fps) == 1
 
+    def test_duplicate_filenames_downloaded_once(self, tmp_path):
+        """Two URLs colliding on filename yield a single download and entry."""
+        (tmp_path / "SAME.h5").write_bytes(b"x")
+
+        fps = download_urls(
+            [
+                "https://example.com/a_BETA_V1/SAME.h5",
+                "https://example.com/a_PROVISIONAL_V1/SAME.h5",
+            ],
+            tmp_path,
+            validate=False,
+        )
+        assert fps == [tmp_path / "SAME.h5"]
+
+    def test_query_string_stripped_from_filename(self, tmp_path):
+        """A presigned URL's query string must not end up in the filename."""
+        (tmp_path / "file.h5").write_bytes(b"x")
+
+        fps = download_urls(
+            ["https://0.0.0.0:1/file.h5?X-Amz-Signature=abc"],
+            tmp_path,
+            validate=False,
+            max_workers=1,
+            retries=1,
+            timeout=1,
+        )
+        assert fps == [tmp_path / "file.h5"]
+
     def test_atomic_write_no_partial_files(self, tmp_path):
         """After a failed download, no partial .h5 file should remain."""
         download_urls(

@@ -1,6 +1,9 @@
 # Local data
 local/
 
+# Exploratory / one-off analysis scripts
+scratch/
+
 # isce3 workflow data dirs (DEM, intermediate products, output GUNW, logs).
 # Only commit the runconfig + python/sh scripts under scripts/isce3/.
 scripts/isce3/inputs/

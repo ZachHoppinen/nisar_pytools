@@ -55,6 +55,10 @@ def compute_baseline(
     rg = dt_reference["science/LSAR/GSLC/metadata/radarGrid"].dataset
     rg_sec = dt_secondary["science/LSAR/GSLC/metadata/radarGrid"].dataset
 
+    # The output grid comes from the reference but the secondary's azimuth
+    # times are used elementwise, so both must be on the same grid.
+    _check_matching_radar_grids(rg, rg_sec)
+
     # Select middle height layer if 3D. Use the same layer index in both
     # products since GSLC radarGrids share the same heightAboveEllipsoid stack.
     if "z" in rg.dims:
@@ -182,6 +186,27 @@ def _extract_orbit(dt: xr.DataTree) -> tuple[np.ndarray, np.ndarray, np.ndarray]
         raise ValueError("Orbit time is scalar — expected 1D array of epoch times")
 
     return position, velocity, time
+
+
+def _check_matching_radar_grids(rg: xr.Dataset, rg_sec: xr.Dataset) -> None:
+    """Raise ValueError if two radarGrids differ in EPSG or x/y extent."""
+    epsg = _extract_epsg_from_dataset(rg)
+    epsg_sec = _extract_epsg_from_dataset(rg_sec)
+    if epsg != epsg_sec:
+        raise ValueError(
+            f"radarGrid EPSG codes do not match: {epsg} (reference) vs "
+            f"{epsg_sec} (secondary)"
+        )
+
+    for dim in ("y", "x"):
+        a = np.asarray(rg.coords[dim])
+        b = np.asarray(rg_sec.coords[dim])
+        if a.shape != b.shape or not np.allclose(a, b):
+            raise ValueError(
+                f"radarGrid {dim} coordinates do not match: "
+                f"shapes {a.shape} vs {b.shape}, "
+                f"range [{a[0]}, {a[-1]}] vs [{b[0]}, {b[-1]}]"
+            )
 
 
 def _extract_epsg_from_dataset(rg: xr.Dataset) -> int:

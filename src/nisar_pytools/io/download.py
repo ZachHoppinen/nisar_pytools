@@ -9,6 +9,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from urllib.parse import urlparse
 
 import h5py
 import requests
@@ -17,6 +18,11 @@ log = logging.getLogger(__name__)
 
 # Thread-local storage for per-thread sessions
 _thread_local = threading.local()
+
+
+def _url_filename(url: str) -> str:
+    """Extract the filename from a URL, stripping query strings."""
+    return urlparse(url).path.rsplit("/", 1)[-1]
 
 
 def validate_h5_quick(filepath: Path) -> bool:
@@ -118,16 +124,17 @@ def download_urls(
     out_directory = Path(out_directory)
     out_directory.mkdir(parents=True, exist_ok=True)
 
-    # Build URL → filename mapping, warn on duplicates
+    # Build URL → filename mapping, skipping URLs that collide on filename
     url_to_filename: dict[str, str] = {}
     seen_filenames: dict[str, str] = {}
     for url in urls:
-        fname = Path(url).name
+        fname = _url_filename(url)
         if fname in seen_filenames:
             log.warning(
-                "Duplicate filename '%s' from URLs:\n  %s\n  %s",
+                "Duplicate filename '%s' — keeping:\n  %s\n  skipping:\n  %s",
                 fname, seen_filenames[fname], url,
             )
+            continue
         seen_filenames[fname] = url
         url_to_filename[url] = fname
 
@@ -192,7 +199,7 @@ def download_urls(
     download_fps: list[Path] = []
     failed_urls: list[str] = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(_download_one, url): url for url in urls}
+        futures = {executor.submit(_download_one, url): url for url in url_to_filename}
         for future in as_completed(futures):
             url = futures[future]
             try:
@@ -223,7 +230,7 @@ def download_urls(
             download_fps = [fp for fp in download_fps if fp not in corrupted_set]
 
             # Find URLs for corrupted files
-            filename_to_url = {Path(url).name: url for url in urls}
+            filename_to_url = {fname: url for url, fname in url_to_filename.items()}
             corrupted_urls = [
                 filename_to_url[fp.name]
                 for fp in corrupted

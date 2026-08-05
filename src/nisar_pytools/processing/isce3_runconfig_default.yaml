@@ -1,7 +1,8 @@
 # Default NISAR L2 InSAR runconfig used by nisar_pytools.processing.rslc_to_gunw
 #
 # Adapted from the JPL X05010 production runconfig (see
-# local/gunws/NISAR_L2_PR_GUNW_..._001.rc.yaml). All path fields are left as
+# local/gunws/NISAR_L2_PR_GUNW_..._001.rc.yaml), with the composite release id
+# bumped to the current P05023 release. All path fields are left as
 # null and will be filled in at runtime by ``rslc_to_gunw``. Processing
 # parameters mirror JPL production: 5x6 crossmul, 13x16 unwrap, full
 # coregistration (dense_offsets + rubbersheet + fine_resample), split-spectrum
@@ -41,11 +42,11 @@ runconfig:
                 runw_version: 1.0.2
                 goff_version: 1.0.2
                 gunw_version: 1.0.2
-            composite_release_id: X05010
+            composite_release_id: P05023
             processing_type: PR
             product_accuracy: N
             processing_center: J
-            partial_granule_id: NISAR_{Level}_PR_{ProductType}_{Track}_{Frame}_{Mode}_{Pol}_{RefStartDateTime}_{RefEndDateTime}_{SecStartDateTime}_{SecEndDateTime}_X05010_N_F_J_001
+            partial_granule_id: NISAR_{Level}_PR_{ProductType}_{Track}_{Frame}_{Mode}_{Pol}_{RefStartDateTime}_{RefEndDateTime}_{SecStartDateTime}_{SecEndDateTime}_P05023_N_F_J_001
         product_path_group:
             product_path:
             scratch_path:

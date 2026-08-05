@@ -2,13 +2,14 @@
 
 import h5py
 import numpy as np
+import pytest
 import xarray as xr
 
 from nisar_pytools import open_nisar
 from nisar_pytools.processing.baseline import compute_baseline
 
 
-def _make_gslc_with_orbit(path, time_offset=0.0, position_offset=None):
+def _make_gslc_with_orbit(path, time_offset=0.0, position_offset=None, grid_offset=0.0):
     """Create a minimal GSLC with orbit and radarGrid data."""
     if position_offset is None:
         position_offset = np.array([0.0, 0.0, 0.0])
@@ -52,8 +53,8 @@ def _make_gslc_with_orbit(path, time_offset=0.0, position_offset=None):
 
         # radarGrid
         rg = f.create_group("science/LSAR/GSLC/metadata/radarGrid")
-        x_rg = np.arange(nx_rg, dtype="f8") * 1000.0 + 500000.0
-        y_rg = np.arange(ny_rg, dtype="f8") * -1000.0 + 4500000.0
+        x_rg = np.arange(nx_rg, dtype="f8") * 1000.0 + 500000.0 + grid_offset
+        y_rg = np.arange(ny_rg, dtype="f8") * -1000.0 + 4500000.0 + grid_offset
         heights = np.array([0, 1500, 3000], dtype="f8")
 
         xds = rg.create_dataset("xCoordinates", data=x_rg)
@@ -159,6 +160,15 @@ class TestComputeBaseline:
         b_par = result["parallel_baseline"].values
         # At least one component should be nonzero
         assert np.any(np.abs(b_perp) > 1) or np.any(np.abs(b_par) > 1)
+
+    def test_mismatched_radar_grids_raise(self, tmp_path):
+        """Shifted radarGrids would silently give wrong baselines without a check."""
+        ref = _make_gslc_with_orbit(tmp_path / "ref.h5")
+        sec = _make_gslc_with_orbit(tmp_path / "sec.h5", grid_offset=25000.0)
+        dt_ref = open_nisar(ref)
+        dt_sec = open_nisar(sec)
+        with pytest.raises(ValueError, match="radarGrid y coordinates do not match"):
+            compute_baseline(dt_ref, dt_sec)
 
     def test_units_in_meters(self, tmp_path):
         ref = _make_gslc_with_orbit(tmp_path / "ref.h5")

@@ -121,6 +121,20 @@ def _C3_to_T3(C3: np.ndarray) -> np.ndarray:
     return T3
 
 
+def _eigvalsh_nan(mats: np.ndarray) -> np.ndarray:
+    """eigvalsh over a stack of matrices, returning NaN where a matrix is not finite.
+
+    LAPACK raises "Eigenvalues did not converge" for the whole batch if any
+    matrix contains NaN/inf, so non-finite pixels (e.g. off-swath after
+    ``get_slc(valid_mask=True)``) are skipped rather than filled.
+    """
+    vals = np.full(mats.shape[:-1], np.nan, dtype=mats.real.dtype)
+    finite = np.isfinite(mats).all(axis=(-2, -1))
+    if finite.any():
+        vals[finite] = np.linalg.eigvalsh(mats[finite])
+    return vals
+
+
 def _eigvals_T3(T3: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Compute eigenvalues of T3, returned as (t3, t2, t1) where t1 >= t2 >= t3.
 
@@ -128,7 +142,7 @@ def _eigvals_T3(T3: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     where t1 is the dominant eigenvalue.
     """
     T3_t = np.transpose(T3, (2, 3, 0, 1))  # (ny, nx, 3, 3)
-    vals = np.linalg.eigvalsh(T3_t)  # (ny, nx, 3), ascending
+    vals = _eigvalsh_nan(T3_t)  # (ny, nx, 3), ascending
     # Cloude-Pottier: t1 >= t2 >= t3
     t3 = vals[..., 0]  # smallest
     t2 = vals[..., 1]
@@ -146,14 +160,17 @@ def _compute_entropy(t1: np.ndarray, t2: np.ndarray, t3: np.ndarray) -> np.ndarr
         with np.errstate(divide="ignore", invalid="ignore"):
             logp = np.where(p > 0, np.log(p) / np.log(3), 0)
         H -= p * logp
-    return np.clip(np.nan_to_num(H, nan=np.nan), 0, 1).astype(np.float32)
+    H = np.clip(np.nan_to_num(H, nan=np.nan), 0, 1)
+    # np.where above turned NaN eigenvalues into zeros; keep those pixels NaN.
+    return np.where(np.isnan(t1), np.nan, H).astype(np.float32)
 
 
 def _compute_anisotropy(t2: np.ndarray, t3: np.ndarray) -> np.ndarray:
     """Compute anisotropy from eigenvalues."""
     with np.errstate(divide="ignore", invalid="ignore"):
         A = np.where((t2 + t3) > 0, (t2 - t3) / (t2 + t3), 0)
-    return np.clip(np.nan_to_num(A, nan=np.nan), 0, 1).astype(np.float32)
+    A = np.clip(np.nan_to_num(A, nan=np.nan), 0, 1)
+    return np.where(np.isnan(t2), np.nan, A).astype(np.float32)
 
 
 def entropy(
@@ -360,7 +377,7 @@ def _alpha1_from_T3(T3: np.ndarray) -> np.ndarray:
     M1 = T3_t[..., 1:, 1:]
 
     t3, t2, t1 = _eigvals_T3(T3)
-    m_vals = np.linalg.eigvalsh(M1)
+    m_vals = _eigvalsh_nan(M1)
     m2 = m_vals[..., 0]
     m1 = m_vals[..., 1]
 
@@ -371,7 +388,8 @@ def _alpha1_from_T3(T3: np.ndarray) -> np.ndarray:
     e11 = np.sqrt(np.clip(e11_sq_clean, 0, 1))
     alpha1 = np.rad2deg(np.arccos(np.clip(e11, 0, 1)))
 
-    return alpha1.astype(np.float32)
+    # nan_to_num above mapped NaN eigenvalues to alpha=90; keep those NaN.
+    return np.where(np.isnan(t1), np.nan, alpha1).astype(np.float32)
 
 
 def _mean_alpha_from_T3(T3: np.ndarray) -> np.ndarray:
@@ -380,7 +398,7 @@ def _mean_alpha_from_T3(T3: np.ndarray) -> np.ndarray:
     M1 = T3_t[..., 1:, 1:]
 
     t3, t2, t1 = _eigvals_T3(T3)
-    m_vals = np.linalg.eigvalsh(M1)
+    m_vals = _eigvalsh_nan(M1)
     m2 = m_vals[..., 0]
     m1 = m_vals[..., 1]
 
@@ -404,4 +422,4 @@ def _mean_alpha_from_T3(T3: np.ndarray) -> np.ndarray:
         w3 = np.where(total > 0, t3 / total, 0)
 
     ma = np.rad2deg(w1 * a1 + w2 * a2 + w3 * a3)
-    return ma.astype(np.float32)
+    return np.where(np.isnan(total), np.nan, ma).astype(np.float32)

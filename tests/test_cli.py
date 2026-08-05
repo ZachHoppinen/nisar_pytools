@@ -5,10 +5,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import h5py
+import numpy as np
 import pytest
 import rasterio
+import yaml
 
-from nisar_pytools.cli import main
+import nisar_pytools
+from nisar_pytools.cli import _RSLC_TO_GUNW_DESCRIPTION, main
 
 
 def _list_tifs(folder: Path) -> list[Path]:
@@ -27,7 +31,7 @@ def test_cli_gslc_default_writes_amplitude(gslc_h5, tmp_path):
     tifs = _list_tifs(out_dir)
     assert len(tifs) == 1
     # First pol in the synthetic fixture is HH.
-    assert tifs[0].name == f"{gslc_h5.stem}_amplitude_HH.tif"
+    assert tifs[0].name == f"{gslc_h5.stem}_amplitude_frequencyA_HH.tif"
 
     with rasterio.open(tifs[0]) as src:
         assert src.count == 1
@@ -48,7 +52,7 @@ def test_cli_gslc_explicit_pol(gslc_h5, tmp_path):
 
     tifs = _list_tifs(out_dir)
     assert len(tifs) == 1
-    assert tifs[0].name == f"{gslc_h5.stem}_amplitude_HV.tif"
+    assert tifs[0].name == f"{gslc_h5.stem}_amplitude_frequencyA_HV.tif"
 
 
 def test_cli_gunw_default_writes_all_bands(gunw_h5, tmp_path):
@@ -63,10 +67,10 @@ def test_cli_gunw_default_writes_all_bands(gunw_h5, tmp_path):
     tifs = _list_tifs(out_dir)
     names = {p.name for p in tifs}
     expected = {
-        f"{gunw_h5.stem}_unwrapped_phase_HH.tif",
-        f"{gunw_h5.stem}_wrapped_phase_HH.tif",
-        f"{gunw_h5.stem}_coherence_HH.tif",
-        f"{gunw_h5.stem}_ionosphere_HH.tif",
+        f"{gunw_h5.stem}_unwrapped_phase_frequencyA_HH.tif",
+        f"{gunw_h5.stem}_wrapped_phase_frequencyA_HH.tif",
+        f"{gunw_h5.stem}_coherence_frequencyA_HH.tif",
+        f"{gunw_h5.stem}_ionosphere_frequencyA_HH.tif",
     }
     assert names == expected
 
@@ -83,7 +87,7 @@ def test_cli_gunw_single_band(gunw_h5, tmp_path):
 
     tifs = _list_tifs(out_dir)
     assert len(tifs) == 1
-    assert tifs[0].name == f"{gunw_h5.stem}_unwrapped_phase_HH.tif"
+    assert tifs[0].name == f"{gunw_h5.stem}_unwrapped_phase_frequencyA_HH.tif"
 
     with rasterio.open(tifs[0]) as src:
         # Synthetic GUNW unwrapped grid is 6x8 from conftest.
@@ -310,6 +314,70 @@ def test_cli_output_is_tiled_geotiff(gunw_h5, tmp_path):
     tif = _list_tifs(out_dir)[0]
     with rasterio.open(tif) as src:
         assert src.is_tiled is True
+
+
+def test_cli_info_mask_coverage_excludes_fill_value(gslc_h5, capsys):
+    """255 is the mask _FillValue (outside the acquisition extent), not valid.
+
+    Real GSLC masks are mostly 255 on the geocoded grid, so counting them
+    as valid reports ~97% coverage where the true figure is ~14%.
+    """
+    with h5py.File(gslc_h5, "r+") as f:
+        mask = f["science/LSAR/GSLC/grids/frequencyA/mask"]
+        arr = np.full(mask.shape, 255, dtype="u1")
+        arr[4:, :] = 1  # in-extent and valid
+        arr[4:, :2] = 0  # in-extent but not fully focused
+        mask[...] = arr
+
+    rc = main(["info", str(gslc_h5), "--json"])
+    assert rc == 0
+    mc = json.loads(capsys.readouterr().out)["grids"]["frequencyA"]["mask_coverage"]
+
+    # 8x10 grid: 40 px are 255, of the remaining 40 px 8 are 0 and 32 are 1.
+    assert mc["valid_count"] == 32
+    assert mc["extent_count"] == 40
+    assert mc["total_count"] == 80
+    assert mc["valid_fraction"] == pytest.approx(32 / 80)
+    assert mc["valid_fraction_in_extent"] == pytest.approx(32 / 40)
+
+
+def test_cli_freq_in_output_filename(gslc_h5, tmp_path):
+    """--freq A and --freq B into one directory must not overwrite each other."""
+    out_dir = tmp_path / "out"
+    for freq in ("A", "B"):
+        main([
+            "to-geotiff",
+            str(gslc_h5),
+            "--output-dir", str(out_dir),
+            "--freq", freq,
+        ])
+
+    tifs = _list_tifs(out_dir)
+    assert len(tifs) == 2
+    assert {p.name for p in tifs} == {
+        f"{gslc_h5.stem}_amplitude_frequencyA_HH.tif",
+        f"{gslc_h5.stem}_amplitude_frequencyB_HH.tif",
+    }
+    # frequencyB is half as wide in the fixture -- proves they are distinct grids.
+    with rasterio.open(out_dir / f"{gslc_h5.stem}_amplitude_frequencyB_HH.tif") as src:
+        assert src.width == 5
+
+
+def test_bundled_runconfig_uses_current_release_id():
+    """The bundled runconfig and its help text must name the current release."""
+    runconfig = (
+        Path(nisar_pytools.__file__).parent
+        / "processing"
+        / "isce3_runconfig_default.yaml"
+    )
+    cfg = yaml.safe_load(runconfig.read_text())
+    # Dump back out so the comment header (which records the X05010 origin)
+    # is dropped and only the settings isce3 actually reads are checked.
+    assert "X05010" not in yaml.safe_dump(cfg)
+    assert "composite_release_id: P05023" in yaml.safe_dump(cfg)
+
+    assert "P05023" in _RSLC_TO_GUNW_DESCRIPTION
+    assert "X05010" not in _RSLC_TO_GUNW_DESCRIPTION
 
 
 def test_cli_crop_rslc_requires_bbox_and_epsg(tmp_path):
