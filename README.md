@@ -89,7 +89,7 @@ nisar_pytools to-geotiff NISAR_L2_PR_GSLC_...h5 \
 nisar_pytools to-geotiff NISAR_L2_PR_GSLC_...h5 --freq B
 ```
 
-Outputs are tiled GeoTIFFs named `<h5_stem>_<band>_<pol>.tif`. Writes
+Outputs are tiled GeoTIFFs named `<h5_stem>_<band>_<frequency>_<pol>.tif`. Writes
 stream chunk-by-chunk via dask + rioxarray, so a full-resolution 41 GB
 GSLC processes with ~330 MB peak memory.
 
@@ -342,7 +342,7 @@ pip install 'nisar-pytools[isce3]'   # for the rest via pip if you skip mamba
 
 Minimal call — auto-fetches a Copernicus 30 m DEM, auto-detects the UTM
 zone + bbox from the reference RSLC, applies the bundled production-spec
-runconfig (JPL X05010 settings, 5×6 / 13×16 looks, full coregistration,
+runconfig (JPL P05023 settings, 5×6 / 13×16 looks, full coregistration,
 split-spectrum ionosphere on, troposphere off):
 
 ```python

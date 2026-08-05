@@ -115,6 +115,9 @@ def read_netcdf(
     -------
     xr.Dataset
     """
+    # decode_coords="all" promotes the grid mapping variable back to a
+    # coordinate, without which rioxarray cannot find the CRS.
+    kwargs.setdefault("decode_coords", "all")
     with xr.open_dataset(path, **kwargs) as ds:
         ds = ds.load()
     if merge_complex:
@@ -132,6 +135,11 @@ def _split_complex_vars(ds: xr.Dataset) -> xr.Dataset:
             # Copy attrs independently to avoid shared-dict mutation
             real_da.attrs = {**var.attrs, "_complex_component": "real"}
             imag_da.attrs = {**var.attrs, "_complex_component": "imag"}
+            # Carry the CRS link; the rest of the encoding describes the
+            # complex dtype and must not follow the float32 components.
+            if "grid_mapping" in var.encoding:
+                real_da.encoding["grid_mapping"] = var.encoding["grid_mapping"]
+                imag_da.encoding["grid_mapping"] = var.encoding["grid_mapping"]
             new_vars[f"{name}_real"] = real_da
             new_vars[f"{name}_imag"] = imag_da
         else:
@@ -169,6 +177,8 @@ def _merge_complex_vars(ds: xr.Dataset) -> xr.Dataset:
                 complex_da.attrs = {
                     k: v for k, v in ds[name].attrs.items() if k != "_complex_component"
                 }
+                if "grid_mapping" in ds[name].encoding:
+                    complex_da.encoding["grid_mapping"] = ds[name].encoding["grid_mapping"]
                 merged[base] = complex_da
                 skip.add(name)
                 skip.add(imag_name)

@@ -175,6 +175,124 @@ class TestEdgeCases:
         # Should not raise, named type should be silently skipped
         assert "data" in dt.children
 
+    def test_mismatched_dimension_scale(self, tmp_path):
+        """A layer on a finer grid is re-homed as its own node.
+
+        Provisional GSLC products attach xCoordinates/yCoordinates to
+        inputDataExceptionMask even though it is posted 4-8x finer. Leaving it
+        in the group would break every rioxarray Dataset operation.
+        """
+        path = tmp_path / "mismatched.h5"
+        ny, nx = 8, 10
+        with h5py.File(path, "w") as f:
+            grp = f.create_group("grids/frequencyA")
+            xds = grp.create_dataset("xCoordinates", data=np.arange(nx, dtype="f8"))
+            yds = grp.create_dataset("yCoordinates", data=np.arange(ny, dtype="f8"))
+            xds.make_scale("xCoordinates")
+            yds.make_scale("yCoordinates")
+
+            hh = grp.create_dataset("HH", shape=(ny, nx), dtype="c8")
+            hh.dims[0].attach_scale(yds)
+            hh.dims[1].attach_scale(xds)
+
+            mask = grp.create_dataset(
+                "inputDataExceptionMask", shape=(ny * 8, nx * 8), dtype="u1"
+            )
+            mask.dims[0].attach_scale(yds)
+            mask.dims[1].attach_scale(xds)
+
+        with h5py.File(path, "r") as f:
+            dt = h5_to_datatree(f)
+
+        ds = dt["grids/frequencyA"].dataset
+        assert ds["HH"].dims == ("y", "x")
+        assert len(ds.coords["x"]) == nx
+        # The off-grid layer is out of the group but still reachable.
+        assert "inputDataExceptionMask" not in ds.data_vars
+        moved = dt["grids/frequencyA/inputDataExceptionMask"].dataset
+        assert moved["inputDataExceptionMask"].shape == (ny * 8, nx * 8)
+
+    def test_correctly_sized_mask_stays_in_group(self, tmp_path):
+        """The workaround must switch itself off once the product is fixed.
+
+        Both guards are conditional on the actual array size, so a corrected
+        inputDataExceptionMask lands in the group like any other layer, with no
+        rename and no re-homing.
+        """
+        path = tmp_path / "fixed_product.h5"
+        ny, nx = 8, 10
+        with h5py.File(path, "w") as f:
+            grp = f.create_group("grids/frequencyB")
+            xds = grp.create_dataset("xCoordinates", data=np.arange(nx, dtype="f8"))
+            yds = grp.create_dataset("yCoordinates", data=np.arange(ny, dtype="f8"))
+            xds.make_scale("xCoordinates")
+            yds.make_scale("yCoordinates")
+            for name, dtype in (("HH", "c8"), ("inputDataExceptionMask", "u1")):
+                ds = grp.create_dataset(name, shape=(ny, nx), dtype=dtype)
+                ds.dims[0].attach_scale(yds)
+                ds.dims[1].attach_scale(xds)
+
+        with h5py.File(path, "r") as f:
+            dt = h5_to_datatree(f)
+
+        ds = dt["grids/frequencyB"].dataset
+        assert ds["inputDataExceptionMask"].dims == ("y", "x")
+        assert "inputDataExceptionMask" not in dt["grids/frequencyB"].children
+
+    def test_offgrid_split_keeps_dataset_usable(self, tmp_path):
+        """The whole point: rioxarray Dataset ops work again."""
+        path = tmp_path / "offgrid_rio.h5"
+        ny, nx = 8, 10
+        with h5py.File(path, "w") as f:
+            grp = f.create_group("grids/frequencyB")
+            x = np.arange(nx, dtype="f8") * 100.0 + 500000.0
+            y = np.arange(ny, dtype="f8")[::-1] * 100.0 + 4000000.0
+            xds = grp.create_dataset("xCoordinates", data=x)
+            yds = grp.create_dataset("yCoordinates", data=y)
+            xds.make_scale("xCoordinates")
+            yds.make_scale("yCoordinates")
+            proj = grp.create_dataset("projection", data=np.uint32(32611))
+            proj.attrs["epsg_code"] = 32611
+
+            hh = grp.create_dataset("HH", shape=(ny, nx), dtype="c8")
+            hh.dims[0].attach_scale(yds)
+            hh.dims[1].attach_scale(xds)
+            mask = grp.create_dataset(
+                "inputDataExceptionMask", shape=(ny, nx * 4), dtype="u1")
+            mask.dims[0].attach_scale(yds)
+            mask.dims[1].attach_scale(xds)
+
+        with h5py.File(path, "r") as f:
+            dt = h5_to_datatree(f)
+
+        ds = dt["grids/frequencyB"].dataset
+        clipped = ds.rio.clip_box(*ds.rio.bounds())
+        assert set(clipped.sizes) == {"x", "y"}
+
+    def test_conflicting_inherited_scales(self, tmp_path):
+        """Scales inherited from a parent group must not collide either.
+
+        The group has no coordinates of its own, so the conflict only shows
+        up between the two variables.
+        """
+        path = tmp_path / "inherited.h5"
+        with h5py.File(path, "w") as f:
+            xds = f.create_dataset("xCoordinates", data=np.arange(10, dtype="f8"))
+            xds.make_scale("xCoordinates")
+
+            grp = f.create_group("grids")
+            coarse = grp.create_dataset("coarse", shape=(4, 10), dtype="f4")
+            coarse.dims[1].attach_scale(xds)
+            fine = grp.create_dataset("fine", shape=(4, 40), dtype="f4")
+            fine.dims[1].attach_scale(xds)
+
+        with h5py.File(path, "r") as f:
+            dt = h5_to_datatree(f)
+
+        ds = dt["grids"].dataset
+        assert ds["coarse"].dims[1] == "x"
+        assert ds["fine"].dims[1] == "fine_dim_1"
+
     def test_empty_group_skipped(self, tmp_path):
         """Groups with only subgroups produce no dataset."""
         path = tmp_path / "nested.h5"

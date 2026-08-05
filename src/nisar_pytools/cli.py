@@ -24,7 +24,7 @@ Subcommand: ``to-geotiff``
 
 If ``--band`` is omitted the default-all set is written. If ``--output-dir``
 is omitted, GeoTIFFs are placed next to the input HDF5 file. Output naming:
-``<h5_stem>_<band>_<pol>.tif``.
+``<h5_stem>_<band>_<freq>_<pol>.tif``.
 """
 
 from __future__ import annotations
@@ -309,7 +309,9 @@ def cmd_to_geotiff(args: argparse.Namespace) -> None:
             da = _apply_bbox(da, bbox_native, band)
             log.info("Cropped %s to bbox %s -> shape=%s", band, bbox_native, tuple(da.shape))
 
-        out_path = out_dir / f"{h5_path.stem}_{band}_{pol}.tif"
+        # Frequency is part of the name so --freq A and --freq B into the
+        # same directory don't overwrite each other.
+        out_path = out_dir / f"{h5_path.stem}_{band}_{freq}_{pol}.tif"
         _write_geotiff(da, out_path)
 
 
@@ -363,16 +365,26 @@ def _array_stats(da: xr.DataArray) -> dict | None:
 def _mask_coverage(da_mask: xr.DataArray) -> dict:
     """Fraction of valid pixels in an integer mask band.
 
-    Any nonzero value is treated as valid. NISAR L2 mask layers are
-    typically 0=invalid, 1=valid but the convention can vary.
+    NISAR L2 mask layers store the subswath number of a valid sample:
+    0 means at least one contributing RSLC pixel was partially focused
+    or invalid, 1..254 are valid subswaths, and 255 is the layer's
+    ``_FillValue`` for pixels outside the radar acquisition extent.
+    Treating 255 as valid inflates coverage on the large off-swath
+    border of a geocoded grid, so it is excluded here. Coverage is
+    reported both over the whole grid and over the in-acquisition
+    extent alone.
     """
     arr = da_mask.values
-    valid = int((arr != 0).sum())
+    in_extent = arr != 255
+    valid = int(((arr != 0) & in_extent).sum())
+    extent = int(in_extent.sum())
     total = int(arr.size)
     return {
         "valid_count": valid,
+        "extent_count": extent,
         "total_count": total,
         "valid_fraction": (valid / total) if total else 0.0,
+        "valid_fraction_in_extent": (valid / extent) if extent else 0.0,
     }
 
 
@@ -733,7 +745,10 @@ def _format_info_text(info: dict) -> str:
         mc = grid_dict.get("mask_coverage")
         if mc is None:
             return ""
-        return f"  [mask valid {mc['valid_fraction']*100:.1f}%]"
+        return (
+            f"  [mask valid {mc['valid_fraction']*100:.1f}% of grid, "
+            f"{mc['valid_fraction_in_extent']*100:.1f}% of acquisition extent]"
+        )
 
     lines.append("  grids:")
     if info["product"] == "GSLC":
@@ -886,7 +901,7 @@ Requires the optional ``[isce3]`` dep group plus conda-installed
   mamba install -c conda-forge isce3 libgdal-hdf5 snaphu-py pygrib pyaps3 raider pysolid netcdf4
 
 If --runconfig is omitted, a bundled production-spec default is used
-(JPL X05010 settings: 5x6 crossmul, 13x16 unwrap, full coregistration,
+(JPL P05023 settings: 5x6 crossmul, 13x16 unwrap, full coregistration,
 split-spectrum ionosphere correction enabled, troposphere disabled).
 Paths, EPSG, and bbox are filled in at runtime.
 
@@ -913,7 +928,7 @@ Convert a NISAR HDF5 file (GUNW or GSLC) into one or more GeoTIFFs.
 
 The product type (GUNW or GSLC) is auto-detected from the file. If --band
 is omitted, the full default-all set for that product type is written.
-Outputs are named: <h5_stem>_<band>_<pol>.tif
+Outputs are named: <h5_stem>_<band>_<freq>_<pol>.tif
 """
 
 _TO_GEOTIFF_EPILOG = """\

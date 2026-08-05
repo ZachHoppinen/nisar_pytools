@@ -137,6 +137,18 @@ class TestToNetcdf:
         loaded = read_netcdf(out)
         assert list(loaded.data_vars) == list(ds.data_vars)
 
+    def test_crs_roundtrip(self, tmp_path):
+        """CRS should survive a to_netcdf / read_netcdf round trip."""
+        pytest.importorskip("rioxarray")
+        # NISAR products name the grid mapping "projection", not "spatial_ref"
+        ds = _make_mixed_dataset().rio.write_crs(3413, grid_mapping_name="projection")
+        out = to_netcdf(ds, tmp_path / "crs.nc")
+        loaded = read_netcdf(out)
+        assert loaded["real_var"].rio.crs is not None
+        assert loaded["real_var"].rio.crs.to_epsg() == 3413
+        assert loaded["complex_var"].rio.crs is not None
+        assert loaded["complex_var"].rio.crs.to_epsg() == 3413
+
     def test_read_netcdf_closes_file(self, tmp_path):
         """read_netcdf should not leave file handles open."""
         ds = _make_dataset()

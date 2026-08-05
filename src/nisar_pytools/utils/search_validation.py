@@ -14,7 +14,7 @@ from shapely.geometry.base import BaseGeometry
 
 log = logging.getLogger(__name__)
 
-NISAR_LAUNCH = pd.Timestamp("2024-02-03")
+NISAR_LAUNCH = pd.Timestamp("2025-07-30")  # GSLV-F16
 
 
 def validate_dates(

@@ -7,6 +7,8 @@ import xarray as xr
 from shapely.geometry import Polygon
 from shapely import wkt
 
+from nisar_pytools.utils.validation import VALID_POLARIZATIONS
+
 
 def get_product_type(dt: xr.DataTree) -> str:
     """Get the product type (e.g. "GSLC", "GUNW")."""
@@ -95,7 +97,7 @@ def get_slc(
         )
 
     if polarization not in ds:
-        available = [k for k in ds.data_vars if k not in ("mask",)]
+        available = [k for k in ds.data_vars if k in VALID_POLARIZATIONS]
         raise ValueError(
             f"Polarization '{polarization}' not found in {frequency}. "
             f"Available: {available}"

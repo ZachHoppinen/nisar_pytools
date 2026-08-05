@@ -17,44 +17,44 @@ from nisar_pytools.utils.search_validation import (
 
 class TestValidateDates:
     def test_valid_strings(self):
-        start, end = validate_dates("2025-01-01", "2025-06-01")
-        assert start == pd.Timestamp("2025-01-01")
-        assert end == pd.Timestamp("2025-06-01")
+        start, end = validate_dates("2025-08-01", "2025-09-01")
+        assert start == pd.Timestamp("2025-08-01")
+        assert end == pd.Timestamp("2025-09-01")
 
     def test_valid_timestamps(self):
-        s = pd.Timestamp("2025-03-01")
-        e = pd.Timestamp("2025-04-01")
+        s = pd.Timestamp("2025-08-01")
+        e = pd.Timestamp("2025-09-01")
         start, end = validate_dates(s, e)
         assert start == s
         assert end == e
 
     def test_start_after_end_raises(self):
         with pytest.raises(ValueError, match="must be before"):
-            validate_dates("2025-06-01", "2025-01-01")
+            validate_dates("2025-09-01", "2025-08-01")
 
     def test_equal_dates_raises(self):
         with pytest.raises(ValueError, match="must be before"):
-            validate_dates("2025-01-01", "2025-01-01")
+            validate_dates("2025-08-01", "2025-08-01")
 
     def test_before_nisar_launch_raises(self):
         with pytest.raises(ValueError, match="before NISAR launch"):
-            validate_dates("2020-01-01", "2025-01-01")
+            validate_dates("2020-01-01", "2025-08-01")
 
     def test_unparseable_raises(self):
         with pytest.raises(ValueError, match="Could not parse"):
-            validate_dates("not-a-date", "2025-01-01")
+            validate_dates("not-a-date", "2025-08-01")
 
     def test_datetime_objects(self):
         from datetime import datetime
         start, end = validate_dates(
-            datetime(2025, 1, 1), datetime(2025, 6, 1)
+            datetime(2025, 8, 1), datetime(2025, 9, 1)
         )
-        assert start == pd.Timestamp("2025-01-01")
+        assert start == pd.Timestamp("2025-08-01")
 
     def test_strips_timezone(self):
         start, end = validate_dates(
-            pd.Timestamp("2025-01-01", tz="UTC"),
-            pd.Timestamp("2025-06-01", tz="UTC"),
+            pd.Timestamp("2025-08-01", tz="UTC"),
+            pd.Timestamp("2025-09-01", tz="UTC"),
         )
         assert start.tz is None
 

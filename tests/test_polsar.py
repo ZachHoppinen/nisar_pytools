@@ -64,6 +64,31 @@ def _make_single_mechanism(ny=16, nx=20):
     return hh, hv, vv
 
 
+class TestNaNInput:
+    """Off-swath pixels are NaN after get_slc(valid_mask=True)."""
+
+    def test_all_nan_tile(self):
+        """Regression: eigvalsh raised LinAlgError on an all-NaN tile."""
+        hh, hv, vv = _make_quad_pol(ny=8, nx=8)
+        hh, hv, vv = (da.where(False) for da in (hh, hv, vv))
+        ds = h_a_alpha(hh, hv, vv)
+        for var in ds.data_vars:
+            assert np.isnan(ds[var].values).all()
+
+    def test_partial_nan_tile(self):
+        """NaN propagates elementwise; valid pixels match the all-valid run."""
+        hh, hv, vv = _make_quad_pol(ny=8, nx=8)
+        full = h_a_alpha(hh, hv, vv)
+        bad = np.zeros((8, 8), dtype=bool)
+        bad[:4] = True
+        hh, hv, vv = (da.where(~bad) for da in (hh, hv, vv))
+        ds = h_a_alpha(hh, hv, vv)
+        for var in ds.data_vars:
+            vals = ds[var].values
+            assert np.isnan(vals[:4]).all()
+            np.testing.assert_allclose(vals[4:], full[var].values[4:], atol=1e-5)
+
+
 class TestCovarianceElements:
     def test_keys(self):
         hh, hv, vv = _make_quad_pol()

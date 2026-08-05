@@ -47,8 +47,12 @@ AZ_LO, AZ_HI, RG_LO, RG_HI = 30.0, 50.0, 36.0, 60.0
 EXPECTED_WINDOW = {"az": (26, 54), "A": (32, 64), "B": (4, 9)}
 
 
-def _make_rslc(path):
-    """Write a tiny but structurally-faithful synthetic RSLC."""
+def _make_rslc(path, pols=("HH", "HV"), n_subswaths=1):
+    """Write a tiny but structurally-faithful synthetic RSLC.
+
+    ``pols`` and ``n_subswaths`` vary by acquisition mode in real products, so
+    the cropper must read them from the file rather than assume them.
+    """
     with h5py.File(path, "w") as f:
         f.attrs["mission_name"] = "NISAR"  # root attr -> must be copied verbatim
 
@@ -61,15 +65,17 @@ def _make_rslc(path):
             g = sw.create_group(fr)
             nrg = slant.size
             # Distinct per-(line,sample) values so slicing is verifiable.
-            for k, pol in enumerate(("HH", "HV")):
+            for k, pol in enumerate(pols):
                 img = (np.arange(N_LINES)[:, None] * 1000
                        + np.arange(nrg)[None, :] + k * 0.5j).astype("c8")
                 g.create_dataset(pol, data=img, chunks=(8, min(8, nrg)))
             g.create_dataset("slantRange", data=slant)
             g.create_dataset("slantRangeSpacing", data=float(slant[1] - slant[0]))
             vs = np.tile([VALID_START, VALID_END], (N_LINES, 1)).astype("u4")
-            g.create_dataset("validSamplesSubSwath1", data=vs)
-            g.create_dataset("listOfPolarizations", data=np.array([b"HH", b"HV"]))
+            for n in range(1, n_subswaths + 1):
+                g.create_dataset(f"validSamplesSubSwath{n}", data=vs)
+            g.create_dataset(
+                "listOfPolarizations", data=np.array([p.encode() for p in pols]))
 
         # geolocationGrid: radar -> lon/lat lookup the cropper reads.
         gl = f.create_group(_GEOLOC)
@@ -192,6 +198,66 @@ class TestCropRslc:
             assert out[f"{_GEOLOC}/coordinateX"].shape == (N_H, N_AZG, N_RGG)
             # Attribute on a cropped axis survives.
             assert out[f"{_SWATHS}/zeroDopplerTime"].attrs["units"] == "seconds"
+
+
+class TestQuadPolMultiSubswath:
+    """Every polarization and every subswath table must be cropped.
+
+    NISAR quad-pol products carry HH/HV/VH/VV and up to four subswath tables;
+    anything left uncropped stays full-frame while the axes around it shrink.
+    """
+
+    @pytest.fixture
+    def quad_h5(self, tmp_path):
+        path = tmp_path / "quad_rslc.h5"
+        _make_rslc(path, pols=("HH", "HV", "VH", "VV"), n_subswaths=4)
+        return path
+
+    def test_all_polarizations_cropped(self, quad_h5, tmp_path):
+        dst = tmp_path / "out.h5"
+        crop_rslc(quad_h5, dst, EXPECTED_WINDOW)
+        a0, a1 = EXPECTED_WINDOW["az"]
+        with h5py.File(dst, "r") as f:
+            for fr, key in (("frequencyA", "A"), ("frequencyB", "B")):
+                p0, p1 = EXPECTED_WINDOW[key]
+                for pol in ("HH", "HV", "VH", "VV"):
+                    assert f[f"{_SWATHS}/{fr}/{pol}"].shape == (a1 - a0, p1 - p0)
+
+    def test_all_subswath_tables_cropped_and_shifted(self, quad_h5, tmp_path):
+        dst = tmp_path / "out.h5"
+        crop_rslc(quad_h5, dst, EXPECTED_WINDOW)
+        a0, a1 = EXPECTED_WINDOW["az"]
+        p0, p1 = EXPECTED_WINDOW["A"]
+        expect = np.clip(np.array([VALID_START, VALID_END]) - p0, 0, p1 - p0)
+        with h5py.File(dst, "r") as f:
+            for n in range(1, 5):
+                vs = f[f"{_SWATHS}/frequencyA/validSamplesSubSwath{n}"][()]
+                assert vs.shape == (a1 - a0, 2)
+                assert (vs == expect).all()
+
+    def test_pol_content_is_the_window(self, quad_h5, tmp_path):
+        dst = tmp_path / "out.h5"
+        crop_rslc(quad_h5, dst, EXPECTED_WINDOW)
+        a0, a1 = EXPECTED_WINDOW["az"]
+        p0, p1 = EXPECTED_WINDOW["A"]
+        with h5py.File(quad_h5, "r") as src, h5py.File(dst, "r") as out:
+            for pol in ("VH", "VV"):
+                expect = src[f"{_SWATHS}/frequencyA/{pol}"][a0:a1, p0:p1]
+                np.testing.assert_array_equal(
+                    out[f"{_SWATHS}/frequencyA/{pol}"][()], expect)
+
+    def test_polarizations_discovered_without_list(self, quad_h5, tmp_path):
+        """Falls back to the complex 2D datasets when the list is absent."""
+        with h5py.File(quad_h5, "r+") as f:
+            for fr in ("frequencyA", "frequencyB"):
+                del f[f"{_SWATHS}/{fr}/listOfPolarizations"]
+        dst = tmp_path / "out.h5"
+        crop_rslc(quad_h5, dst, EXPECTED_WINDOW)
+        a0, a1 = EXPECTED_WINDOW["az"]
+        p0, p1 = EXPECTED_WINDOW["A"]
+        with h5py.File(dst, "r") as f:
+            for pol in ("HH", "HV", "VH", "VV"):
+                assert f[f"{_SWATHS}/frequencyA/{pol}"].shape == (a1 - a0, p1 - p0)
 
 
 class TestCropPair:
