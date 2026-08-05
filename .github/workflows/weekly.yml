@@ -1,0 +1,73 @@
+name: Weekly regression
+
+on:
+  schedule:
+    # Mondays, 11:17 UTC. Off the hour so it is not queued behind the crowd.
+    - cron: "17 11 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -l {0}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history + tags so setuptools-scm can derive the version.
+          fetch-depth: 0
+
+      - uses: mamba-org/setup-micromamba@v1
+        with:
+          environment-file: environment.yml
+          # Deliberately not cached, unlike ci.yml: solving fresh every week is
+          # how this job notices a dependency releasing something that breaks us.
+          cache-environment: false
+
+      - name: Unit tests
+        run: pytest tests/ -v -m "not integration"
+
+      - name: Write Earthdata credentials
+        env:
+          EARTHDATA_USERNAME: ${{ secrets.EARTHDATA_USERNAME }}
+          EARTHDATA_PASSWORD: ${{ secrets.EARTHDATA_PASSWORD }}
+        run: |
+          if [ -z "$EARTHDATA_USERNAME" ]; then
+            echo "No EARTHDATA_USERNAME secret set; the remote-read tests will skip."
+            exit 0
+          fi
+          printf 'machine urs.earthdata.nasa.gov login %s password %s\n' \
+            "$EARTHDATA_USERNAME" "$EARTHDATA_PASSWORD" > ~/.netrc
+          chmod 600 ~/.netrc
+
+      - name: Live product tests
+        # -s so the seed and the chosen granules land in the run log even on a pass.
+        run: pytest tests/test_live_products.py -v -s -m integration
+
+      - name: Report failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          gh label create weekly-regression --color B60205 \
+            --description "Weekly live-product regression run failed" --force
+          existing=$(gh issue list --label weekly-regression --state open \
+            --limit 1 --json number --jq '.[0].number')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "Failed again on $(date -u +%Y-%m-%d): $run_url"
+          else
+            gh issue create --label weekly-regression \
+              --title "Weekly regression failed" \
+              --body "The weekly live-product run failed: $run_url
+
+          Most likely causes, in rough order: a new NISAR processing maturity, an
+          ASF/CMR API change, a filename convention change, a product layout
+          change, or a dependency release. See tests/test_live_products.py."
+          fi
