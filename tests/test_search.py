@@ -9,7 +9,7 @@ from unittest.mock import patch, MagicMock
 
 from nisar_pytools.io.search import (
     PRODUCT_TYPES,
-    _collection_ids,
+    _collection_names,
     _url_collection,
     find_nisar,
 )
@@ -30,16 +30,21 @@ class TestMaturity:
         assert _url_collection(_PROV) == "NISAR_L2_GSLC_PROVISIONAL_V1"
         assert _url_collection("https://example.com/no/nisar/segment.h5") is None
 
-    def test_collection_ids_match_level_and_maturity(self):
+    def test_collection_names_match_level_and_maturity(self):
         # RSLC is L1 and GSLC is L2, so the level must not be hardcoded.
-        assert _collection_ids("GSLC", "provisional")
-        assert _collection_ids("RSLC", "beta")
-        assert not set(_collection_ids("GSLC", "beta")) & set(
-            _collection_ids("GSLC", "provisional"))
+        assert _collection_names("GSLC", "provisional") == [
+            "NISAR_L2_GSLC_PROVISIONAL_V1"]
+        assert _collection_names("RSLC", "beta") == ["NISAR_L1_RSLC_BETA_V1"]
+        assert not set(_collection_names("GSLC", "beta")) & set(
+            _collection_names("GSLC", "provisional"))
+
+    def test_validated_excludes_the_other_maturities(self):
+        """Validated has no infix, so a bare ``_V1`` suffix would catch them all."""
+        assert _collection_names("GSLC", "validated") == ["NISAR_L2_GSLC_V1"]
 
     def test_unknown_maturity_raises(self):
         with pytest.raises(ValueError, match="maturity"):
-            _collection_ids("GSLC", "operational")
+            _collection_names("GSLC", "operational")
 
     @patch("nisar_pytools.io.search.asf")
     def test_mixed_baselines_warn(self, mock_asf, caplog):
@@ -66,7 +71,7 @@ class TestMaturity:
         find_nisar([-115, 43, -114, 44], "2026-01-01", "2026-08-01",
                    maturity="provisional")
         kwargs = mock_asf.search.call_args.kwargs
-        assert "collections" in kwargs
+        assert "shortName" in kwargs
         assert "platform" not in kwargs
 
 

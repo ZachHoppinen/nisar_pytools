@@ -25,8 +25,11 @@ PRODUCT_TYPES = {
 }
 
 
-#: processing maturities NISAR collections are published at, newest first
-MATURITIES = ("provisional", "beta")
+#: processing maturities NISAR collections are published at, most mature first
+MATURITIES = ("validated", "provisional", "beta")
+
+#: the operational tier carries no maturity infix: ``NISAR_L<n>_<TYPE>_V1``
+_MATURITY_INFIX = {"validated": "", "provisional": "_PROVISIONAL", "beta": "_BETA"}
 
 
 def _url_filename(url: str) -> str:
@@ -40,25 +43,32 @@ def _url_collection(url: str) -> str | None:
     return tail.split("/", 1)[0] if tail else None
 
 
-def _collection_ids(product_type: str, maturity: str) -> list[str]:
-    """CMR concept IDs for one product type at one processing maturity.
+def _collection_names(product_type: str, maturity: str) -> list[str]:
+    """CMR collection short names for one product type at one maturity.
 
     Collections are named ``NISAR_L<n>_<TYPE>_<MATURITY>_V1``, so the level is
-    matched rather than hardcoded (RSLC is L1, GSLC is L2, and so on).
+    matched rather than hardcoded (RSLC is L1, GSLC is L2, and so on). Matching
+    the whole suffix rather than the maturity alone keeps ``validated``, which
+    has no infix, from also selecting the beta and provisional collections.
+
+    asf_search 13 dropped the concept IDs this used to return and made
+    ``dataset_collections`` a set of short names; iterating it yields those
+    names under both layouts, since the old mapping was keyed on them.
     """
     from asf_search.CMR.datasets import dataset_collections
 
-    suffix = f"_{maturity.upper()}_V1"
-    ids: list[str] = []
-    for name, concept_ids in dataset_collections["NISAR"].items():
-        if f"_{product_type}_" in name and name.endswith(suffix):
-            ids.extend(concept_ids)
-    if not ids:
+    if maturity not in _MATURITY_INFIX:
+        raise ValueError(
+            f"Unknown maturity '{maturity}'. Supported: {sorted(MATURITIES)}"
+        )
+    suffix = f"_{product_type}{_MATURITY_INFIX[maturity]}_V1"
+    names = sorted(n for n in dataset_collections["NISAR"] if n.endswith(suffix))
+    if not names:
         raise ValueError(
             f"No NISAR {product_type} collection at maturity '{maturity}'. "
             f"Supported: {sorted(MATURITIES)}"
         )
-    return ids
+    return names
 
 
 def find_nisar(
@@ -101,7 +111,8 @@ def find_nisar(
     include_qa : bool
         If ``True``, include QA files (``_QA_STATS.h5``). Default ``False``.
     maturity : str, optional
-        Restrict to one processing baseline: ``"provisional"`` or ``"beta"``.
+        Restrict to one processing baseline: ``"validated"``, ``"provisional"``
+        or ``"beta"``.
         ``None`` (default) searches every baseline and a warning names them when
         more than one comes back.
 
@@ -153,9 +164,9 @@ def find_nisar(
     if maturity is None:
         search_kwargs["platform"] = asf.PLATFORM.NISAR
     else:
-        # asf_search ORs platform with collections, so passing both would widen
-        # the search back to every maturity instead of narrowing it.
-        search_kwargs["collections"] = _collection_ids(pt_upper, maturity)
+        # asf_search ORs platform with the collection keywords, so passing both
+        # would widen the search back to every maturity instead of narrowing it.
+        search_kwargs["shortName"] = _collection_names(pt_upper, maturity)
     if path_number is not None:
         search_kwargs["relativeOrbit"] = path_number
     if frame is not None:

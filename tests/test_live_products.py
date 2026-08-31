@@ -12,7 +12,11 @@ running them weekly instead of on every push.
 The region and the granule are chosen at random, seeded on the run date, so
 each run exercises different products rather than passing forever on one that
 already worked. A failing run prints its seed; set NISAR_WEEKLY_SEED to that
-value to replay the same choices.
+value to replay the same window and the same region. It will not return the
+same granule: ASF publishes into a past acquisition window as processing
+catches up, so the result list the seed indexes into keeps changing. A failing
+run prints the granule it used; pass that to NISAR_WEEKLY_GRANULE to open the
+exact product that failed.
 
 Run by .github/workflows/weekly.yml. The remote-read tests need Earthdata
 credentials in ~/.netrc and skip without them.
@@ -32,7 +36,7 @@ import pytest
 from nisar_pytools.io.h5_to_datatree import h5_to_datatree
 from nisar_pytools.io.search import (
     MATURITIES,
-    _collection_ids,
+    _collection_names,
     _url_collection,
     _url_filename,
     find_nisar,
@@ -59,8 +63,21 @@ LOOKBACK_DAYS = int(os.environ.get("NISAR_WEEKLY_DAYS", "120"))
 
 # Which region and which granule get pulled is seeded on the run date, so a run
 # varies week to week but is reproducible: a failure prints its seed, and
-# NISAR_WEEKLY_SEED=<that value> replays the same choices.
+# NISAR_WEEKLY_SEED=<that value> replays the same choices. The seed also fixes
+# the search window (see _window), without which a replay would draw from a
+# different set of products than the run it is meant to reproduce.
 SEED = os.environ.get("NISAR_WEEKLY_SEED", datetime.now(timezone.utc).strftime("%Y%m%d"))
+
+# Pin an exact granule, as ``NISAR_WEEKLY_GRANULE="RSLC=<name>.h5"`` (comma
+# separated for both types). The seed alone cannot reproduce a past run's
+# granule: ASF keeps publishing into an acquisition window after the fact, so
+# the result list a seed indexes into is not the same list a week later. This
+# is the only way to get back to the exact product that failed.
+PINNED = dict(
+    entry.split("=", 1)
+    for entry in os.environ.get("NISAR_WEEKLY_GRANULE", "").split(",")
+    if entry
+)
 
 requires_earthdata = pytest.mark.skipif(
     not (Path.home() / ".netrc").exists(),
@@ -69,7 +86,18 @@ requires_earthdata = pytest.mark.skipif(
 
 
 def _window() -> tuple[str, str]:
-    end = datetime.now(timezone.utc)
+    """Search window, anchored on the seed rather than on now().
+
+    Anchoring on now() would slide the window between runs, so replaying a seed
+    would search a different date range, get a different result set back, and
+    then index into it with the same choice, landing on a different granule
+    than the run being replayed.
+    """
+    try:
+        end = datetime.strptime(SEED, "%Y%m%d").replace(tzinfo=timezone.utc)
+    except ValueError:
+        # A seed that is not a run date carries no window with it.
+        end = datetime.now(timezone.utc)
     start = end - timedelta(days=LOOKBACK_DAYS)
     return start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
 
@@ -101,6 +129,18 @@ def _pick(urls: list[str], product_type: str) -> str:
     return url
 
 
+def _frequency(names, where: str) -> str:
+    """The frequency group a granule actually carries.
+
+    Single-pol products are published with only one of the two: an RSLC whose
+    polarization code is ``NASV`` has frequencyB and no frequencyA.
+    """
+    for freq in ("frequencyA", "frequencyB"):
+        if freq in names:
+            return freq
+    pytest.fail(f"no frequency group in {where} (seed={SEED})")
+
+
 def _remote_handle(url: str) -> h5py.File:
     """Open a granule over byte-range from whichever collection served it.
 
@@ -123,16 +163,28 @@ def rslc_urls() -> list[str]:
     return _search("RSLC")
 
 
+def _open(urls: list[str], product_type: str) -> h5py.File:
+    """The granule under test: pinned by env if set, else the seeded choice."""
+    if product_type not in PINNED:
+        return _remote_handle(_pick(urls, product_type))
+    name = PINNED[product_type]
+    print(f"[pinned] {product_type} granule: {name}")
+    short_names = tuple(
+        n for m in MATURITIES for n in _collection_names(product_type, m)
+    )
+    return open_remote_rslc(name, short_names=short_names)
+
+
 @pytest.fixture(scope="session")
 def remote_gslc(gslc_urls):
-    h5file = _remote_handle(_pick(gslc_urls, "GSLC"))
+    h5file = _open(gslc_urls, "GSLC")
     yield h5file
     h5file.close()
 
 
 @pytest.fixture(scope="session")
 def remote_rslc(rslc_urls):
-    h5file = _remote_handle(_pick(rslc_urls, "RSLC"))
+    h5file = _open(rslc_urls, "RSLC")
     yield h5file
     h5file.close()
 
@@ -142,29 +194,28 @@ class TestCollections:
 
     @pytest.mark.parametrize("product_type", ["GSLC", "RSLC"])
     def test_nothing_published_outside_known_maturities(self, product_type):
-        """The unsuffixed ``NISAR_L<n>_<TYPE>_V1`` collections are the operational
-        tier. ASF has them registered but empty while the mission is still
-        provisional, so ``MATURITIES`` covering only beta and provisional is
-        correct today. Granules turning up there is the signal that
-        ``_collection_ids`` and ``find_nisar(maturity=)`` can no longer reach
+        """``MATURITIES`` now covers all three tiers ASF publishes NISAR under,
+        so every collection carrying this product type should be reachable. One
+        turning up that is not is the signal that the mission added a tier and
+        ``_collection_names`` and ``find_nisar(maturity=)`` can no longer reach
         everything that is published.
         """
         import asf_search as asf
         from asf_search.CMR.datasets import dataset_collections
 
-        reachable = {cid for m in MATURITIES for cid in _collection_ids(product_type, m)}
-        for name, ids in dataset_collections["NISAR"].items():
-            if f"_{product_type}_" not in name or set(ids) & reachable:
+        reachable = {n for m in MATURITIES for n in _collection_names(product_type, m)}
+        for name in dataset_collections["NISAR"]:
+            if f"_{product_type}_" not in name or name in reachable:
                 continue
-            assert not asf.search(collections=ids, maxResults=1), (
+            assert not asf.search(shortName=name, maxResults=1), (
                 f"{name} now holds granules, but "
                 f"nisar_pytools.io.search.MATURITIES only knows {sorted(MATURITIES)}."
             )
 
     @pytest.mark.parametrize("product_type", ["GSLC", "RSLC"])
     @pytest.mark.parametrize("maturity", MATURITIES)
-    def test_collection_ids_resolve(self, product_type, maturity):
-        assert _collection_ids(product_type, maturity)
+    def test_collection_names_resolve(self, product_type, maturity):
+        assert _collection_names(product_type, maturity)
 
 
 class TestSearch:
@@ -193,11 +244,14 @@ class TestRemoteGslc:
     def test_datatree_builds(self, remote_gslc):
         dt = h5_to_datatree(remote_gslc)
         assert "science" in dt.children
-        assert dt["science/LSAR/GSLC/grids/frequencyA"].dataset.rio.crs is not None
+        grids = dt["science/LSAR/GSLC/grids"]
+        freq = _frequency(grids.children, "GSLC grids")
+        assert grids[freq].dataset.rio.crs is not None
 
     def test_imagery_lazy_and_readable(self, remote_gslc):
         dt = h5_to_datatree(remote_gslc)
-        grids = dt["science/LSAR/GSLC/grids/frequencyA"].dataset
+        node = dt["science/LSAR/GSLC/grids"]
+        grids = node[_frequency(node.children, "GSLC grids")].dataset
         pol = next(v for v in ("HH", "VV", "HV", "VH") if v in grids)
         image = grids[pol]
         assert isinstance(image.data, da.Array)
@@ -214,8 +268,9 @@ class TestRemoteRslc:
         # detect_product_type only accepts the reader's GSLC/GUNW, so read raw.
         raw = remote_rslc["science/LSAR/identification/productType"][()]
         assert (raw.decode() if isinstance(raw, bytes) else str(raw)).strip() == "RSLC"
-        freq_a = remote_rslc["science/LSAR/RSLC/swaths/frequencyA"]
-        assert any(pol in freq_a for pol in ("HH", "VV", "HV", "VH"))
+        swaths = remote_rslc["science/LSAR/RSLC/swaths"]
+        freq = swaths[_frequency(swaths, "RSLC swaths")]
+        assert any(pol in freq for pol in ("HH", "VV", "HV", "VH"))
 
     def test_skeleton_roundtrips(self, remote_rslc, tmp_path):
         """The path crop_streamed takes: structure without the imagery."""

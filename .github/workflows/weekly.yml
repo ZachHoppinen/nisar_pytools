@@ -13,6 +13,8 @@ permissions:
 jobs:
   live:
     runs-on: ubuntu-latest
+    # A hung byte-range read would otherwise sit on the 6h runner ceiling.
+    timeout-minutes: 45
     defaults:
       run:
         shell: bash -l {0}
@@ -51,9 +53,12 @@ jobs:
         run: pytest tests/test_live_products.py -v -s -m integration
 
       - name: Report failure
-        if: failure()
+        # A job that exceeds timeout-minutes reports as cancelled, not failed, so
+        # failure() alone let the 2026-08-17 hang pass without any report.
+        if: failure() || cancelled()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
         run: |
           run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           gh label create weekly-regression --color B60205 \
@@ -61,11 +66,18 @@ jobs:
           existing=$(gh issue list --label weekly-regression --state open \
             --limit 1 --json number --jq '.[0].number')
           if [ -n "$existing" ]; then
-            gh issue comment "$existing" --body "Failed again on $(date -u +%Y-%m-%d): $run_url"
+            # Assigning is what notifies: the owner does not watch this repo, so
+            # an unassigned bot issue and its comments reach nobody.
+            gh issue edit "$existing" --add-assignee "$OWNER"
+            gh issue comment "$existing" \
+              --body "@$OWNER did not pass again on $(date -u +%Y-%m-%d): $run_url"
           else
             gh issue create --label weekly-regression \
+              --assignee "$OWNER" \
               --title "Weekly regression failed" \
-              --body "The weekly live-product run failed: $run_url
+              --body "@$OWNER the weekly live-product run did not pass: $run_url
+
+          A run that times out reports as cancelled rather than failed.
 
           Most likely causes, in rough order: a new NISAR processing maturity, an
           ASF/CMR API change, a filename convention change, a product layout
