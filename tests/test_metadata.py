@@ -26,8 +26,18 @@ class TestMetadata:
 
     def test_acquisition_time(self, gslc_h5):
         dt = open_nisar(gslc_h5)
-        ts = get_acquisition_time(dt)
-        assert isinstance(ts, pd.Timestamp)
+        t = get_acquisition_time(dt)
+        assert isinstance(t.reference, pd.Timestamp)
+        assert t.reference == pd.Timestamp("2025-11-03T12:46:15")
+        assert t.secondary is None
+
+    def test_acquisition_time_gunw_has_both_passes(self, gunw_h5):
+        """GUNW carries no bare zeroDopplerStartTime, which used to give NaT."""
+        dt = open_nisar(gunw_h5)
+        t = get_acquisition_time(dt)
+        assert t.reference == pd.Timestamp("2025-11-03T12:46:15")
+        assert t.secondary == pd.Timestamp("2025-11-15T12:46:15")
+        assert (t.secondary - t.reference).days == 12
 
     def test_orbit_info(self, gslc_h5):
         dt = open_nisar(gslc_h5)

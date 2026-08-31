@@ -167,13 +167,28 @@ hh_raw = get_slc(dt, polarization="HH", valid_mask=False)   # opt out of masking
 
 ```python
 from nisar_pytools.utils.metadata import (
-    get_acquisition_time, get_orbit_info, get_bounding_polygon,
+    get_orbit_info, get_bounding_polygon,
 )
 
-print(get_acquisition_time(dt))   # 2025-11-03 12:46:15
 print(get_orbit_info(dt))         # {'track_number': 77, 'frame_number': 24, ...}
 print(get_bounding_polygon(dt))   # shapely Polygon in WGS84
 print(hh.rio.crs)                 # EPSG:32611
+```
+
+`get_acquisition_time` returns both passes, so it reads the same way whether
+the product came from one acquisition or two:
+
+```python
+from nisar_pytools.utils.metadata import get_acquisition_time
+
+t = get_acquisition_time(gslc)
+t.reference                       # 2025-11-03 12:46:15
+t.secondary                       # None, a GSLC is one acquisition
+
+t = get_acquisition_time(gunw)
+t.reference                       # 2026-02-15 12:11:20
+t.secondary                       # 2026-02-27 12:11:20
+(t.secondary - t.reference).days  # 12, the temporal baseline
 ```
 
 ### Valid mask semantics

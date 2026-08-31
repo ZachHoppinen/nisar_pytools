@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import NamedTuple
+
 import pandas as pd
 import xarray as xr
 from shapely.geometry import Polygon
@@ -15,16 +17,41 @@ def get_product_type(dt: xr.DataTree) -> str:
     return dt.attrs.get("product_type", "")
 
 
-def get_acquisition_time(dt: xr.DataTree) -> pd.Timestamp:
-    """Get the acquisition start time from identification metadata.
+class AcquisitionTime(NamedTuple):
+    """Start times of the acquisitions a product was built from.
+
+    ``secondary`` is ``None`` for single-acquisition products; a GUNW is an
+    interferogram between two passes and fills both.
+    """
+
+    reference: pd.Timestamp
+    secondary: pd.Timestamp | None = None
+
+
+def get_acquisition_time(dt: xr.DataTree) -> AcquisitionTime:
+    """Get the acquisition start time(s) from identification metadata.
 
     Returns
     -------
-    pd.Timestamp
+    AcquisitionTime
+        ``reference`` always; ``secondary`` only for products built from a
+        pair, so ``t.reference`` is safe to reach for on any product.
+
+    Examples
+    --------
+    >>> t = get_acquisition_time(gunw)          # doctest: +SKIP
+    >>> (t.secondary - t.reference).days        # doctest: +SKIP
+    12
     """
-    ident = dt["science/LSAR/identification"].dataset
-    time_str = ident.attrs.get("zeroDopplerStartTime", "")
-    return pd.Timestamp(time_str)
+    ident = dt["science/LSAR/identification"].dataset.attrs
+    # GUNW names its two passes and carries no bare zeroDopplerStartTime, so
+    # reading only that name returned NaT for every interferogram.
+    if "zeroDopplerStartTime" in ident:
+        return AcquisitionTime(pd.Timestamp(ident["zeroDopplerStartTime"]))
+    return AcquisitionTime(
+        pd.Timestamp(ident.get("referenceZeroDopplerStartTime", "")),
+        pd.Timestamp(ident.get("secondaryZeroDopplerStartTime", "")),
+    )
 
 
 def get_orbit_info(dt: xr.DataTree) -> dict:
