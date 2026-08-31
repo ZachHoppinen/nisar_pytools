@@ -3,6 +3,7 @@
 import h5py
 import numpy as np
 import pandas as pd
+import xarray as xr
 from shapely.geometry import Polygon
 
 from nisar_pytools import open_nisar
@@ -25,8 +26,18 @@ class TestMetadata:
 
     def test_acquisition_time(self, gslc_h5):
         dt = open_nisar(gslc_h5)
-        ts = get_acquisition_time(dt)
-        assert isinstance(ts, pd.Timestamp)
+        t = get_acquisition_time(dt)
+        assert isinstance(t.reference, pd.Timestamp)
+        assert t.reference == pd.Timestamp("2025-11-03T12:46:15")
+        assert t.secondary is None
+
+    def test_acquisition_time_gunw_has_both_passes(self, gunw_h5):
+        """GUNW carries no bare zeroDopplerStartTime, which used to give NaT."""
+        dt = open_nisar(gunw_h5)
+        t = get_acquisition_time(dt)
+        assert t.reference == pd.Timestamp("2025-11-03T12:46:15")
+        assert t.secondary == pd.Timestamp("2025-11-15T12:46:15")
+        assert (t.secondary - t.reference).days == 12
 
     def test_orbit_info(self, gslc_h5):
         dt = open_nisar(gslc_h5)
@@ -112,11 +123,29 @@ class TestGetSlcValidMask:
 
 
 class TestGetGunw:
-    def test_unwrapped_phase_default(self, gunw_h5):
+    def test_returns_whole_layer_by_default(self, gunw_h5):
+        """The layer's variables share a grid, so they come back together."""
         dt = open_nisar(gunw_h5)
-        phase = get_gunw(dt, valid_mask=False)
+        ds = get_gunw(dt, valid_mask=False)
+        assert isinstance(ds, xr.Dataset)
+        assert "unwrappedPhase" in ds
+        assert "coherenceMagnitude" in ds
+        assert ds["unwrappedPhase"].shape == (6, 8)
+        assert ds["unwrappedPhase"].dims == ("y", "x")
+
+    def test_single_variable_returns_dataarray(self, gunw_h5):
+        dt = open_nisar(gunw_h5)
+        phase = get_gunw(dt, variable="unwrappedPhase", valid_mask=False)
+        assert isinstance(phase, xr.DataArray)
         assert phase.shape == (6, 8)
         assert phase.dims == ("y", "x")
+
+    def test_layers_are_on_different_grids(self, gunw_h5):
+        """Why a layer is the unit: wrapped is finer, so it cannot merge in."""
+        dt = open_nisar(gunw_h5)
+        unw = get_gunw(dt, valid_mask=False)
+        wrapped = get_gunw(dt, layer="wrappedInterferogram", valid_mask=False)
+        assert unw["unwrappedPhase"].shape != wrapped["wrappedInterferogram"].shape
 
     def test_wrapped_interferogram(self, gunw_h5):
         dt = open_nisar(gunw_h5)
@@ -176,7 +205,7 @@ class TestGetGunwValidMask:
         self._write_mask(gunw_h5, "unwrappedInterferogram", mask)
 
         dt = open_nisar(gunw_h5)
-        phase = get_gunw(dt, valid_mask=True).compute()
+        phase = get_gunw(dt, variable="unwrappedPhase", valid_mask=True).compute()
         assert np.isnan(phase.values[0, 0])
         assert np.isnan(phase.values[0, 1])
         assert np.isnan(phase.values[0, 2])
@@ -185,8 +214,19 @@ class TestGetGunwValidMask:
 
     def test_valid_mask_false_skips_masking(self, gunw_h5):
         dt = open_nisar(gunw_h5)
-        phase = get_gunw(dt, valid_mask=False).compute()
+        phase = get_gunw(dt, variable="unwrappedPhase", valid_mask=False).compute()
         assert not np.any(np.isnan(phase.values))
+
+    def test_mask_applies_across_the_whole_layer(self, gunw_h5):
+        ny, nx = 6, 8
+        mask = np.full((ny, nx), 11, dtype="u1")
+        mask[0, 0] = 255
+        self._write_mask(gunw_h5, "unwrappedInterferogram", mask)
+
+        dt = open_nisar(gunw_h5)
+        ds = get_gunw(dt, valid_mask=True).compute()
+        for name in ("unwrappedPhase", "coherenceMagnitude"):
+            assert np.isnan(ds[name].values[0, 0]), name
 
     def test_integer_variable_promoted_to_float_when_masked(self, gunw_h5):
         # connectedComponents is uint16; masking promotes it to float so NaN fits.
