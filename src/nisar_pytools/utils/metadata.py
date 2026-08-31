@@ -118,25 +118,53 @@ def get_slc(
     return slc
 
 
+def _keep_encoding(obj, keep):
+    """``obj.where(keep)``, preserving encoding so ``grid_mapping`` survives.
+
+    ``.where()`` drops encoding, and rioxarray reads the CRS out of it.
+    """
+    if isinstance(obj, xr.Dataset):
+        encodings = {name: var.encoding for name, var in obj.data_vars.items()}
+        out = obj.where(keep)
+        for name, encoding in encodings.items():
+            out[name].encoding = encoding
+        return out
+    encoding = obj.encoding
+    out = obj.where(keep)
+    out.encoding = encoding
+    return out
+
+
 def get_gunw(
     dt: xr.DataTree,
-    variable: str = "unwrappedPhase",
+    variable: str | None = None,
     polarization: str = "HH",
     layer: str = "unwrappedInterferogram",
     frequency: str = "frequencyA",
     valid_mask: bool = True,
-) -> xr.DataArray:
-    """Extract a variable from a GUNW DataTree.
+) -> xr.Dataset | xr.DataArray:
+    """Read a GUNW layer, or one variable out of it.
+
+    A GUNW layer holds several co-registered variables on one grid, so the
+    default is to return all of them together: ``unwrappedInterferogram``
+    carries the phase, its coherence, the connected components and the
+    ionosphere screen.
+
+    The three layers are *not* on a common grid. In a typical product the
+    unwrapped interferogram and pixel offsets are posted at 80 m while the
+    wrapped interferogram is at 20 m, so they cannot be combined into one
+    Dataset without resampling. Ask for one layer at a time.
 
     Parameters
     ----------
     dt : xr.DataTree
         Opened GUNW DataTree from :func:`open_nisar`.
-    variable : str
-        Data variable inside the ``layer``/``polarization`` group, e.g.
-        ``"unwrappedPhase"``, ``"coherenceMagnitude"``, ``"connectedComponents"``,
-        ``"wrappedInterferogram"``, ``"alongTrackOffset"``. Default
-        ``"unwrappedPhase"``.
+    variable : str, optional
+        A single data variable inside the ``layer``/``polarization`` group,
+        e.g. ``"unwrappedPhase"``, ``"coherenceMagnitude"``,
+        ``"connectedComponents"``, ``"wrappedInterferogram"``,
+        ``"alongTrackOffset"``. ``None`` (default) returns the whole layer as
+        a Dataset.
     polarization : str
         Polarization (e.g. ``"HH"``, ``"VV"``). Default ``"HH"``.
     layer : str
@@ -156,10 +184,11 @@ def get_gunw(
 
     Returns
     -------
-    xr.DataArray
-        DataArray with ``y``/``x`` coordinates. With ``valid_mask=True``,
-        integer-typed variables (e.g. ``connectedComponents``) are promoted
-        to float to hold ``NaN``.
+    xr.Dataset or xr.DataArray
+        The whole layer as a Dataset, or a single DataArray when ``variable``
+        is given. Either way with ``y``/``x`` coordinates. With
+        ``valid_mask=True``, integer-typed variables (e.g.
+        ``connectedComponents``) are promoted to float to hold ``NaN``.
 
     Raises
     ------
@@ -199,13 +228,18 @@ def get_gunw(
             f"Available: {available_pols}"
         )
 
-    if variable not in pol_ds:
-        raise ValueError(
-            f"Variable '{variable}' not found in {layer}/{polarization}. "
-            f"Available: {list(pol_ds.data_vars)}"
-        )
+    if variable is None:
+        # .dataset hands back a read-only DatasetView; to_dataset() gives a
+        # real Dataset so callers can add variables to what they get.
+        out = dt[pol_path].to_dataset()
+    else:
+        if variable not in pol_ds:
+            raise ValueError(
+                f"Variable '{variable}' not found in {layer}/{polarization}. "
+                f"Available: {list(pol_ds.data_vars)}"
+            )
+        out = pol_ds[variable]
 
-    da = pol_ds[variable]
     if valid_mask:
         if "mask" not in layer_ds:
             raise ValueError(
@@ -214,11 +248,9 @@ def get_gunw(
         mask = layer_ds["mask"]
         ref_subswath = (mask // 10) % 10
         sec_subswath = mask % 10
-        # Preserve encoding (e.g. grid_mapping) so rio.crs survives .where().
-        encoding = da.encoding
-        da = da.where((ref_subswath != 0) & (sec_subswath != 0) & (mask != 255))
-        da.encoding = encoding
-    return da
+        keep = (ref_subswath != 0) & (sec_subswath != 0) & (mask != 255)
+        out = _keep_encoding(out, keep)
+    return out
 
 
 def get_bounding_polygon(dt: xr.DataTree) -> Polygon:
