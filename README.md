@@ -5,13 +5,11 @@ Open source Python tools for working with NISAR datasets.
 ## About
 
 `nisar_pytools` opens NASA [NISAR](https://nisar.jpl.nasa.gov/) (NASA-ISRO
-Synthetic Aperture Radar) HDF5 products as lazy `xarray` objects, so you can
-search for a product, open it, and pull out the layer you want without
-learning the HDF5 layout.
+Synthetic Aperture Radar) HDF5 products as lazy `xarray` objects. Search for a
+product, open it, and pull out a layer without learning the HDF5 layout.
 
-Reading is the common case and it needs nothing beyond the base install.
-Building products (interferograms, RSLC to GUNW, dolphin prep, polarimetry)
-lives in the [processing reference](docs/processing.md).
+Reading products needs nothing beyond the base install. Building them is
+covered in the [processing reference](docs/processing.md).
 
 ### Supported Products
 
@@ -20,7 +18,7 @@ lives in the [processing reference](docs/processing.md).
 
 `find_nisar` searches for other types (RSLC, GCOV, RIFG, RUNW, ROFF, GOFF),
 and RSLC products can be streamed and cropped. Full reader support for
-additional types will be added over time.
+more types will come over time.
 
 ## Quick start
 
@@ -30,7 +28,7 @@ from nisar_pytools.utils.metadata import get_gunw
 
 dt = open_nisar("NISAR_L2_PR_GUNW_...h5")
 
-# One layer, all of its variables, on one grid, invalid pixels blanked.
+# A whole layer, masked. Every variable in it shares one grid.
 ds = get_gunw(dt)
 ds.unwrappedPhase.plot()
 ds.coherenceMagnitude.plot()
@@ -50,15 +48,10 @@ Data variables:
 Nothing is read from disk until you plot or `.compute()`, so this works the
 same on a 2 GB product as on a small one.
 
-## Getting Started
+## Installation
 
-### Prerequisites
-
-- Python 3.10+
-- [Miniforge](https://github.com/conda-forge/miniforge) (recommended)
-- NASA Earthdata login (for downloading from ASF)
-
-### Installation
+Needs Python 3.10+ and a NASA Earthdata login to download from ASF.
+[Miniforge](https://github.com/conda-forge/miniforge) is recommended.
 
 ```sh
 pip install nisar-pytools
@@ -83,8 +76,8 @@ conda activate nisar_pytools
 ```
 
 The bundled `environment.yml` also installs the ISCE3 RSLC to GUNW stack.
-You only need that for the [processing reference](docs/processing.md);
-reading products does not require it.
+You only need that for the [processing reference](docs/processing.md).
+Reading products does not require it.
 
 ## Reading products
 
@@ -141,9 +134,9 @@ ds_raw = get_gunw(dt, valid_mask=False)
 ```
 
 The three layers are **not** on a common grid. In a typical product the
-unwrapped interferogram and pixel offsets are posted at 80 m while the
-wrapped interferogram is at 20 m, so they cannot be merged into one Dataset
-without resampling. Ask for one layer at a time:
+unwrapped interferogram and pixel offsets are posted at 80 m, and the wrapped
+interferogram at 20 m. Merging them into one Dataset would mean resampling, so
+ask for one layer at a time:
 
 ```python
 wrapped = get_gunw(dt, layer="wrappedInterferogram")   # 20 m grid
@@ -206,23 +199,23 @@ to float so `NaN` fits.
   flag and the reference/secondary RSLC subswath numbers.
   - `W` = reference water flag (1 = water, 0 = land). Water pixels are
     **kept**, so mask water separately if you need to drop it.
-  - `R` = reference RSLC subswath number; `0` means the sample is invalid
+  - `R` = reference RSLC subswath number. `0` means the sample is invalid
     in the reference, so it is dropped.
-  - `S` = secondary RSLC subswath number; `0` means the sample is invalid
+  - `S` = secondary RSLC subswath number. `0` means the sample is invalid
     in the secondary, so it is dropped.
   - `255` = fill outside the acquisition extent, dropped.
 
   In code: kept where `(mask // 10) % 10 != 0 and mask % 10 != 0 and mask != 255`.
 
-  Each GUNW layer carries its own mask on its own grid; the layer mask is
-  shared across polarizations.
+  Each GUNW layer carries its own mask on its own grid. Within a layer, the
+  mask is shared across polarizations.
 
 ## Command line
 
 ### GeoTIFF export
 
-Quick export of commonly used bands from a NISAR HDF5, handy for pulling into
-QGIS. Installed with the package as the `nisar_pytools` console script; run
+Exports common bands from a NISAR HDF5 to GeoTIFF, ready to drop into QGIS.
+The package installs a `nisar_pytools` console script. Run
 `nisar_pytools to-geotiff --help` for the full band catalog.
 
 ```bash
@@ -253,10 +246,13 @@ Writes stream chunk-by-chunk via dask + rioxarray, so a full-resolution
 
 ### File summary
 
-Product type/version, file size, acquisition time(s), track/frame/direction,
-polarizations, per-grid shape and resolution, native + WGS84 extent, and (for
-GUNW) coherence / unwrapped-phase stats, connected-component summary, and
-perpendicular + parallel baselines from the radarGrid cube.
+Prints what a file holds without opening it in Python: product type and
+version, file size, acquisition times, track, frame, direction, polarizations,
+per-grid shape and resolution, and the extent in native and WGS84 coordinates.
+
+For a GUNW it adds coherence and unwrapped-phase statistics, a
+connected-component summary, and the perpendicular and parallel baselines from
+the radarGrid cube.
 
 ```bash
 nisar_pytools info NISAR_L2_PR_GUNW_...h5
@@ -318,10 +314,10 @@ stack = stack_gslcs(
 
 ## Processing
 
-Interferogram formation, coherence, multilooking, unwrapping, the production
-RSLC to GUNW pipeline, dolphin prep, phase linking, polarimetric
-decomposition, and local incidence angle are documented in the
-[processing reference](docs/processing.md).
+The [processing reference](docs/processing.md) covers building products rather
+than reading them: interferogram formation, coherence, multilooking,
+unwrapping, the production RSLC to GUNW pipeline, dolphin prep, phase linking,
+polarimetric decomposition, and local incidence angle.
 
 ## Roadmap
 
