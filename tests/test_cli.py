@@ -112,6 +112,47 @@ def test_cli_gunw_wrapped_phase_is_real(gunw_h5, tmp_path):
         assert (src.height, src.width) == (12, 16)
 
 
+def test_cli_gcov_default_writes_gamma0_linear_and_db(gcov_h5, tmp_path):
+    """No --band on a GCOV -> gamma0 (as stored) and gamma0_db for the first pol."""
+    out_dir = tmp_path / "out"
+    main(["to-geotiff", str(gcov_h5), "--output-dir", str(out_dir)])
+
+    names = [t.name for t in _list_tifs(out_dir)]
+    assert names == [
+        f"{gcov_h5.stem}_gamma0_db_frequencyA_HH.tif",
+        f"{gcov_h5.stem}_gamma0_frequencyA_HH.tif",
+    ]
+
+    with h5py.File(gcov_h5, "r") as f:
+        hhhh = f["science/LSAR/GCOV/grids/frequencyA/HHHH"][()]
+    with rasterio.open(out_dir / names[1]) as src:
+        assert src.crs is not None
+        np.testing.assert_array_equal(src.read(1), hhhh)
+    with rasterio.open(out_dir / names[0]) as src:
+        np.testing.assert_allclose(src.read(1), 10 * np.log10(hhhh), rtol=1e-6)
+
+
+def test_cli_gcov_pol_selects_covariance_term(gcov_h5, tmp_path):
+    """--pol HV on a GCOV writes the HVHV term."""
+    main([
+        "to-geotiff", str(gcov_h5),
+        "--band", "gamma0", "--pol", "HV",
+        "--output-dir", str(tmp_path),
+    ])
+    tifs = _list_tifs(tmp_path)
+    assert [t.name for t in tifs] == [f"{gcov_h5.stem}_gamma0_frequencyA_HV.tif"]
+
+
+def test_cli_gcov_rejects_gslc_band(gcov_h5, tmp_path):
+    """A GSLC-only band on a GCOV exits with a clear error."""
+    with pytest.raises(SystemExit, match="not valid for GCOV"):
+        main([
+            "to-geotiff", str(gcov_h5),
+            "--band", "amplitude",
+            "--output-dir", str(tmp_path),
+        ])
+
+
 def test_cli_no_output_dir_writes_next_to_h5(gslc_h5):
     """Without --output-dir, tifs land beside the input h5."""
     main(["to-geotiff", str(gslc_h5)])
@@ -241,6 +282,18 @@ def test_cli_info_gslc_text(gslc_h5, capsys):
     assert "frequencyA" in out
     assert "frequencyB" in out
     # GSLC has a single time, not reference/secondary.
+    assert "reference:" not in out
+
+
+def test_cli_info_gcov_text(gcov_h5, capsys):
+    """info on GCOV prints the single-acquisition block and HH, HV pols."""
+    rc = main(["info", str(gcov_h5)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "GCOV" in out
+    assert "track:" in out
+    assert "HH, HV (frequencyA)" in out
+    assert "frequencyA: 8 x 10 @ 10 m x 10 m" in out
     assert "reference:" not in out
 
 

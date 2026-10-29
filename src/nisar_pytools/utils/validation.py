@@ -8,7 +8,7 @@ import h5py
 
 REQUIRED_GROUP = "science/LSAR"
 PRODUCT_TYPE_PATH = "science/LSAR/identification/productType"
-SUPPORTED_PRODUCTS = {"GSLC", "GUNW"}
+SUPPORTED_PRODUCTS = {"GCOV", "GSLC", "GUNW"}
 VALID_FREQUENCIES = {"frequencyA", "frequencyB"}
 VALID_POLARIZATIONS = {"HH", "HV", "VH", "VV"}
 

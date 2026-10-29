@@ -213,3 +213,42 @@ def gunw_h5(tmp_path):
         )
 
     return path
+
+
+@pytest.fixture
+def gcov_h5(tmp_path):
+    """Create a minimal synthetic GCOV HDF5 file."""
+    path = tmp_path / "test_gcov.h5"
+    ny, nx = 8, 10
+    with h5py.File(path, "w") as f:
+        f.attrs["Conventions"] = "CF-1.7"
+
+        # Identification
+        ident = f.create_group("science/LSAR/identification")
+        ident.create_dataset("productType", data=b"GCOV")
+        ident.create_dataset("trackNumber", data=np.uint32(114))
+        ident.create_dataset("frameNumber", data=np.uint16(66))
+        _add_common_identification(ident)
+
+        # Grids / frequencyA: real-valued diagonal covariance terms on an x/y grid
+        grp = f.create_group("science/LSAR/GCOV/grids/frequencyA")
+        x = np.arange(nx, dtype="f8") * 10.0 + 500000.0
+        y = np.arange(ny, dtype="f8") * -10.0 + 4000000.0
+        xds = grp.create_dataset("xCoordinates", data=x)
+        yds = grp.create_dataset("yCoordinates", data=y)
+        xds.make_scale("xCoordinates")
+        yds.make_scale("yCoordinates")
+        # Distinct positive values so linear -> dB conversions are checkable
+        ramp = (np.arange(ny * nx, dtype="f4").reshape(ny, nx) + 1) * 0.01
+        for term in ("HHHH", "HVHV", "numberOfLooks", "rtcGammaToSigmaFactor"):
+            ds = grp.create_dataset(term, data=ramp, chunks=(4, 4))
+            ds.attrs["grid_mapping"] = "projection"
+            ds.dims[0].attach_scale(yds)
+            ds.dims[1].attach_scale(xds)
+        grp.create_dataset("mask", data=np.ones((ny, nx), dtype="u1"), chunks=(4, 4))
+        proj = grp.create_dataset("projection", data=np.uint32(32611))
+        proj.attrs["epsg_code"] = 32611
+        grp.create_dataset("listOfCovarianceTerms", data=np.array([b"HHHH", b"HVHV"]))
+        grp.create_dataset("listOfPolarizations", data=np.array([b"HH", b"HV"]))
+
+    return path

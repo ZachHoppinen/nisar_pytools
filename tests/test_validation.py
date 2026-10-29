@@ -85,6 +85,11 @@ class TestDetectProductType:
         with h5py.File(path, "r") as f:
             assert detect_product_type(f) == "GUNW"
 
+    def test_gcov(self, tmp_path):
+        path = _make_nisar_h5(tmp_path / "gcov.h5", "GCOV")
+        with h5py.File(path, "r") as f:
+            assert detect_product_type(f) == "GCOV"
+
     def test_unsupported_type(self, tmp_path):
         path = _make_nisar_h5(tmp_path / "rslc.h5", "RSLC")
         with h5py.File(path, "r") as f:

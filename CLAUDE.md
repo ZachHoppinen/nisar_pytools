@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Python tools for reading NISAR (NASA-ISRO SAR) HDF5 data products into lazy xarray DataTree objects. Currently supports GSLC and GUNW product types.
+Python tools for reading NISAR (NASA-ISRO SAR) HDF5 data products into lazy xarray DataTree objects. Currently supports GSLC, GUNW, and GCOV product types.
 
 ## Commands
 
@@ -21,7 +21,7 @@ Python tools for reading NISAR (NASA-ISRO SAR) HDF5 data products into lazy xarr
 /Users/zmhoppinen/miniforge3/envs/nisar_pytools/bin/python -m pytest tests/test_reader.py::TestOpenNisar::test_lazy_by_default -v
 
 # Run integration tests (requires real NISAR files in local/)
-NISAR_TEST_GSLC=local/gslcs/<file>.h5 NISAR_TEST_GUNW=local/gunws/<file>.h5 \
+NISAR_TEST_GSLC=local/gslcs/<file>.h5 NISAR_TEST_GUNW=local/gunws/<file>.h5 NISAR_TEST_GCOV=<file>.h5 \
   /Users/zmhoppinen/miniforge3/envs/nisar_pytools/bin/python -m pytest tests/ -v
 
 # Lint

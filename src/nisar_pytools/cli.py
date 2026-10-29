@@ -9,10 +9,15 @@ Currently supported:
     nisar_pytools info <h5> [--json]
 
 Subcommand: ``to-geotiff``
-    Convert a NISAR HDF5 file (GUNW or GSLC) into one or more GeoTIFFs.
+    Convert a NISAR HDF5 file (GUNW, GSLC, or GCOV) into one or more GeoTIFFs.
 
     GSLC bands (default-all = ``amplitude``):
         amplitude  -- 10*log10(|SLC|^2)  in dB
+
+    GCOV bands (default-all = gamma0, gamma0_db):
+        gamma0     -- grids/<freq>/<pol><pol> diagonal covariance term
+                      (RTC gamma0, linear power, as stored)
+        gamma0_db  -- 10*log10(gamma0)
 
     GUNW bands (default-all = unwrapped_phase, wrapped_phase, coherence,
     ionosphere):
@@ -56,6 +61,7 @@ log = logging.getLogger("nisar_pytools")
 
 # Per-product band catalog. The order is the default-all order.
 _GSLC_BANDS: tuple[str, ...] = ("amplitude",)
+_GCOV_BANDS: tuple[str, ...] = ("gamma0", "gamma0_db")
 _GUNW_BANDS: tuple[str, ...] = (
     "unwrapped_phase",
     "wrapped_phase",
@@ -84,6 +90,8 @@ def _resolve_pol(
 
     Discovery rules:
       * GSLC: polarizations are data_vars under ``grids/<freq>``.
+      * GCOV: polarizations are the diagonal covariance terms (``HHHH`` ->
+        ``HH``) under ``grids/<freq>``.
       * GUNW: polarizations are subgroups under
         ``grids/<freq>/unwrappedInterferogram``.
 
@@ -95,6 +103,9 @@ def _resolve_pol(
     if product == "GSLC":
         ds = dt[f"science/LSAR/GSLC/grids/{freq}"].dataset
         available = [p for p in ds.data_vars if p in VALID_POLARIZATIONS]
+    elif product == "GCOV":
+        ds = dt[f"science/LSAR/GCOV/grids/{freq}"].dataset
+        available = _gcov_pols(ds)
     else:  # GUNW
         node = dt[f"science/LSAR/GUNW/grids/{freq}/unwrappedInterferogram"]
         available = [k for k in node.children if k in VALID_POLARIZATIONS]
@@ -114,6 +125,29 @@ def _resolve_pol(
             f"Available: {available}"
         )
     return requested
+
+
+def _gcov_pols(ds: xr.Dataset) -> list[str]:
+    """Polarizations with a diagonal covariance term (e.g. HHHH -> HH) in a GCOV grid."""
+    return [
+        v[:2] for v in ds.data_vars
+        if len(v) == 4 and v[:2] == v[2:] and v[:2] in VALID_POLARIZATIONS
+    ]
+
+
+def _gcov_band(dt: xr.DataTree, freq: str, pol: str, band: str) -> xr.DataArray:
+    """Return the GCOV diagonal term for ``pol`` as linear gamma0 or in dB."""
+    gamma0 = dt[f"science/LSAR/GCOV/grids/{freq}"].dataset[pol + pol]
+    if band == "gamma0":
+        return gamma0
+    if band == "gamma0_db":
+        # Diagonal covariance terms are power, so 10*log10.
+        db = to_db(gamma0, power=True).astype("float32")
+        db.attrs = {"long_name": "RTC gamma0 backscatter", "units": "dB"}
+        if gamma0.rio.crs is not None:
+            db.rio.write_crs(gamma0.rio.crs, inplace=True)
+        return db
+    raise ValueError(f"Unknown GCOV band '{band}'")
 
 
 def _gslc_amplitude(dt: xr.DataTree, freq: str, pol: str) -> xr.DataArray:
@@ -271,16 +305,16 @@ def cmd_to_geotiff(args: argparse.Namespace) -> None:
     dt = open_nisar(h5_path)
     product = get_product_type(dt)
 
-    if product not in ("GSLC", "GUNW"):
+    if product not in ("GSLC", "GUNW", "GCOV"):
         raise SystemExit(
             f"Unsupported product type '{product}'. "
-            f"Only GSLC and GUNW are currently supported."
+            f"Only GSLC, GUNW, and GCOV are currently supported."
         )
 
     pol = _resolve_pol(dt, product, freq, args.pol)
 
     # Resolve which bands to write.
-    all_bands = _GSLC_BANDS if product == "GSLC" else _GUNW_BANDS
+    all_bands = {"GSLC": _GSLC_BANDS, "GUNW": _GUNW_BANDS, "GCOV": _GCOV_BANDS}[product]
     if args.band is None:
         bands = list(all_bands)
     else:
@@ -301,6 +335,8 @@ def cmd_to_geotiff(args: argparse.Namespace) -> None:
     for band in bands:
         if product == "GSLC":
             da = _gslc_amplitude(dt, freq, pol)
+        elif product == "GCOV":
+            da = _gcov_band(dt, freq, pol, band)
         else:
             da = _gunw_band(dt, freq, pol, band)
 
@@ -488,14 +524,18 @@ def _common_geometry(dt: xr.DataTree, sample_da: xr.DataArray) -> dict:
     }
 
 
-def _gather_gslc_info(dt: xr.DataTree, h5_path: Path) -> dict:
-    """Collect GSLC-relevant metadata + per-frequency grid descriptors."""
+def _gather_gslc_info(dt: xr.DataTree, h5_path: Path, product: str = "GSLC") -> dict:
+    """Collect GSLC or GCOV metadata + per-frequency grid descriptors.
+
+    Both are single-acquisition products with one grid per frequency; they
+    differ only in how polarization layers are named (``HH`` vs ``HHHH``).
+    """
     ident = dt["science/LSAR/identification"].dataset.attrs
     info: dict = {
         "file": h5_path.name,
         "size": _format_bytes(h5_path.stat().st_size),
         "size_bytes": h5_path.stat().st_size,
-        "product": "GSLC",
+        "product": product,
         "product_version": ident.get("productVersion", ""),
         "spec_version": ident.get("productSpecificationVersion", ""),
         "processing_datetime": ident.get("processingDateTime", ""),
@@ -522,14 +562,17 @@ def _gather_gslc_info(dt: xr.DataTree, h5_path: Path) -> dict:
 
     # Walk grids -> per-frequency shape, resolution, polarizations, mask coverage.
     grids: dict = {}
-    grids_node = dt["science/LSAR/GSLC/grids"]
+    grids_node = dt[f"science/LSAR/{product}/grids"]
     sample_da: xr.DataArray | None = None
     for freq_name in grids_node.children:
-        ds = dt[f"science/LSAR/GSLC/grids/{freq_name}"].dataset
-        pols = [p for p in ds.data_vars if p in VALID_POLARIZATIONS]
+        ds = dt[f"science/LSAR/{product}/grids/{freq_name}"].dataset
+        if product == "GCOV":
+            pols = _gcov_pols(ds)
+        else:
+            pols = [p for p in ds.data_vars if p in VALID_POLARIZATIONS]
         if not pols:
             continue
-        da = ds[pols[0]]
+        da = ds[pols[0] + pols[0]] if product == "GCOV" else ds[pols[0]]
         if sample_da is None:
             sample_da = da
         x_res, y_res = _coord_resolution(da)
@@ -538,7 +581,7 @@ def _gather_gslc_info(dt: xr.DataTree, h5_path: Path) -> dict:
             "shape": tuple(da.shape),
             "resolution_m": (x_res, y_res),
         }
-        # GSLC mask layer is at grids/<freq>/mask -- one mask shared by all pols.
+        # Mask layer is at grids/<freq>/mask -- one mask shared by all pols.
         if "mask" in ds.data_vars:
             grid_info["mask_coverage"] = _mask_coverage(ds["mask"])
         grids[freq_name] = grid_info
@@ -694,10 +737,10 @@ def _format_info_text(info: dict) -> str:
     lines.append(f"  processed:    {info['processing_datetime']}")
     lines.append("")
 
-    # Acquisition block differs between GSLC and GUNW.
+    # Acquisition block differs between single-acquisition products and GUNW.
     acq = info["acquisition"]
     lines.append("  acquisition:")
-    if info["product"] == "GSLC":
+    if info["product"] in ("GSLC", "GCOV"):
         lines.append(f"    time:         {acq['start']}  ->  {acq['end']}")
         lines.append(f"    orbit:        {acq['orbit']}")
     else:
@@ -751,7 +794,7 @@ def _format_info_text(info: dict) -> str:
         )
 
     lines.append("  grids:")
-    if info["product"] == "GSLC":
+    if info["product"] in ("GSLC", "GCOV"):
         for freq_name, g in info["grids"].items():
             shape = g["shape"]
             x_res, y_res = g["resolution_m"]
@@ -828,14 +871,14 @@ def cmd_info(args: argparse.Namespace) -> None:
     h5_path = Path(args.h5_path).expanduser().resolve()
     dt = open_nisar(h5_path)
     product = get_product_type(dt)
-    if product == "GSLC":
-        info = _gather_gslc_info(dt, h5_path)
+    if product in ("GSLC", "GCOV"):
+        info = _gather_gslc_info(dt, h5_path, product)
     elif product == "GUNW":
         info = _gather_gunw_info(dt, h5_path)
     else:
         raise SystemExit(
             f"Unsupported product type '{product}'. "
-            f"Only GSLC and GUNW are currently supported."
+            f"Only GSLC, GUNW, and GCOV are currently supported."
         )
 
     if args.json:
@@ -883,9 +926,9 @@ _TOP_DESCRIPTION = """\
 Command-line tools for working with NISAR HDF5 products.
 
 Subcommands:
-  to-geotiff    Convert GUNW / GSLC HDF5 bands into GeoTIFFs.
+  to-geotiff    Convert GUNW / GSLC / GCOV HDF5 bands into GeoTIFFs.
   info          Print a summary (product type, track/frame, times, pols,
-                grids, coherence stats) for a GUNW or GSLC HDF5 file.
+                grids, coherence stats) for a GUNW, GSLC, or GCOV HDF5 file.
   rslc-to-gunw  Run nisar.workflows.insar on an RSLC pair and produce
                 a GUNW (requires the [isce3] optional dep group).
 
@@ -924,9 +967,9 @@ Use --json to emit machine-readable output instead of the formatted text.
 """
 
 _TO_GEOTIFF_DESCRIPTION = """\
-Convert a NISAR HDF5 file (GUNW or GSLC) into one or more GeoTIFFs.
+Convert a NISAR HDF5 file (GUNW, GSLC, or GCOV) into one or more GeoTIFFs.
 
-The product type (GUNW or GSLC) is auto-detected from the file. If --band
+The product type (GUNW, GSLC, or GCOV) is auto-detected from the file. If --band
 is omitted, the full default-all set for that product type is written.
 Outputs are named: <h5_stem>_<band>_<freq>_<pol>.tif
 """
@@ -937,6 +980,13 @@ Available bands
 GSLC:
   amplitude        10*log10(|SLC|^2) -- backscatter amplitude in dB.
                    Source: science/LSAR/GSLC/grids/<freq>/<pol>  (complex64)
+
+GCOV:
+  gamma0           RTC gamma0 backscatter, linear power, written as stored.
+                   Source: science/LSAR/GCOV/grids/<freq>/<pol><pol>  (float32)
+                   e.g. --pol HV selects HVHV.
+
+  gamma0_db        10*log10(gamma0) -- the same layer in dB.
 
 GUNW:
   unwrapped_phase  Geocoded unwrapped interferometric phase (radians).
@@ -963,6 +1013,7 @@ GUNW:
 Default-all
 -----------
 GSLC -> amplitude
+GCOV -> gamma0, gamma0_db
 GUNW -> unwrapped_phase, wrapped_phase, coherence, ionosphere
 
 Polarization & frequency
@@ -1017,6 +1068,9 @@ Examples
   nisar_pytools to-geotiff /path/to/GUNW.h5 \\
       --band unwrapped_phase --pol HV --output-dir /tmp/out
 
+  # GCOV gamma0 in dB for HV
+  nisar_pytools to-geotiff /path/to/GCOV.h5 --band gamma0_db --pol HV
+
   # GSLC amplitude (dB) for the default pol on frequencyB
   nisar_pytools to-geotiff /path/to/GSLC.h5 --freq B
 
@@ -1044,23 +1098,24 @@ def build_parser() -> argparse.ArgumentParser:
     # to-geotiff subcommand
     p = sub.add_parser(
         "to-geotiff",
-        help="Convert NISAR HDF5 (GUNW or GSLC) bands to GeoTIFF.",
+        help="Convert NISAR HDF5 (GUNW, GSLC, or GCOV) bands to GeoTIFF.",
         description=_TO_GEOTIFF_DESCRIPTION,
         epilog=_TO_GEOTIFF_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument(
         "h5_path",
-        help="Path to a NISAR HDF5 file (GUNW or GSLC). Product type is auto-detected.",
+        help="Path to a NISAR HDF5 file (GUNW, GSLC, or GCOV). Product type is auto-detected.",
     )
     p.add_argument(
         "--band",
         default=None,
-        choices=sorted(set(_GSLC_BANDS) | set(_GUNW_BANDS)),
+        choices=sorted(set(_GSLC_BANDS) | set(_GUNW_BANDS) | set(_GCOV_BANDS)),
         metavar="BAND",
         help=(
             "Single band to extract. "
             "GSLC: amplitude. "
+            "GCOV: gamma0 | gamma0_db. "
             "GUNW: unwrapped_phase | wrapped_phase | coherence | ionosphere. "
             "Default: write the full default-all set for the product type "
             "(see epilog below)."
@@ -1138,7 +1193,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_info.add_argument(
         "h5_path",
-        help="Path to a NISAR HDF5 file (GUNW or GSLC). Product type is auto-detected.",
+        help="Path to a NISAR HDF5 file (GUNW, GSLC, or GCOV). Product type is auto-detected.",
     )
     p_info.add_argument(
         "--json",

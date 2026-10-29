@@ -26,6 +26,17 @@ class TestOpenNisar:
         dt = open_nisar(gunw_h5)
         assert dt.attrs["product_type"] == "GUNW"
 
+    def test_product_type_attr_gcov(self, gcov_h5):
+        dt = open_nisar(gcov_h5)
+        assert dt.attrs["product_type"] == "GCOV"
+
+    def test_gcov_covariance_terms_on_grid(self, gcov_h5):
+        dt = open_nisar(gcov_h5)
+        ds = dt["science/LSAR/GCOV/grids/frequencyA"].dataset
+        assert ds["HHHH"].dims == ("y", "x")
+        assert isinstance(ds["HHHH"].data, da.Array)
+        assert ds.rio.crs.to_epsg() == 32611
+
     def test_lazy_by_default(self, gslc_h5):
         dt = open_nisar(gslc_h5)
         freq_a = dt["science/LSAR/GSLC/grids/frequencyA"].dataset
@@ -100,4 +111,13 @@ class TestIntegration:
             pytest.skip("Set NISAR_TEST_GUNW env var to a real GUNW .h5 file")
         dt = open_nisar(path)
         assert dt.attrs["product_type"] == "GUNW"
+        assert "science" in dt.children
+
+    @pytest.mark.integration
+    def test_real_gcov(self):
+        path = os.environ.get("NISAR_TEST_GCOV")
+        if not path:
+            pytest.skip("Set NISAR_TEST_GCOV env var to a real GCOV .h5 file")
+        dt = open_nisar(path)
+        assert dt.attrs["product_type"] == "GCOV"
         assert "science" in dt.children
