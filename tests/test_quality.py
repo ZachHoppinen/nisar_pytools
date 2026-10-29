@@ -331,3 +331,30 @@ def test_interior_gap_does_not_move_autocorrelation(tmp_path, stack, monkeypatch
     out = _check(_write_rslc(tmp_path / "t.h5", 4, empty_lines=slice(120, 136)), stack)
     assert out["flags"] == ["MISSING_DATA"]
     assert out["acf_blocks"] == 4         # the middle block touches the gap and is skipped
+
+
+# --- L0B stamps --------------------------------------------------------------
+PRI = 522e-6
+
+
+def test_clean_stamps_have_no_faults():
+    utc = np.arange(1000) * PRI
+    assert quality._stamp_faults(utc, utc[-1]) == (0, 0.0)
+
+
+def test_duplicate_stamp_shifts_tail_one_pulse():
+    # 027_D_068 2026-02-04: one bad stamp, then every stamp is the previous row's
+    true = np.arange(1000) * PRI
+    utc = true.copy()
+    utc[500] = true[501] - 4.5e-6
+    utc[501:] = true[500:-1]
+    n_short, tail = quality._stamp_faults(utc, true[-1])
+    assert n_short >= 1
+    assert tail == pytest.approx(-1.0)
+
+
+def test_l0b_stamp_flag(tmp_path):
+    m = quality.rslc_quality_metrics(_write_rslc(tmp_path / "a.h5", 0), qa_stats=False)
+    assert "L0B_STAMPS" in quality.identify_poorly_focused_rslc({**m, "l0b_short_intervals": 1, "l0b_tail_pri": 0.0})["flags"]
+    assert "L0B_STAMPS" in quality.identify_poorly_focused_rslc({**m, "l0b_short_intervals": 0, "l0b_tail_pri": -1.0})["flags"]
+    assert "L0B_STAMPS" not in quality.identify_poorly_focused_rslc({**m, "l0b_short_intervals": 0, "l0b_tail_pri": 0.0})["flags"]

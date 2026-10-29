@@ -55,8 +55,8 @@ ACF1_TOL = 0.05         # azimuth lag-1 autocorrelation vs reference median
 ACF4_TOL = 0.03         # azimuth lag-4 autocorrelation vs reference median
 QA_TAIL_FACTOR = 0.5    # bright histogram tail vs reference median
 QA_EDGE_DB = 3.0        # range-spectrum edge drop deeper than reference median
-STAMP_SHORT = 10        # stamp intervals under half a PRI
-STAMP_TAIL_S = -0.01    # last stamp before the L0B zeroDopplerEndTime
+STAMP_SHORT = 0         # stamp intervals under half a PRI (any one is a fault)
+STAMP_TAIL_PRI = -0.5   # last stamp before the L0B zeroDopplerEndTime, in PRIs
 GAP_LINE_INVALID = 0.5  # line counts as missing when over half its valid window is zero/NaN
 EXCEPTION_FRAC = 0.01   # valid samples with a non-benign inputDataExceptionMask code
 # qFSP-H1 sample slip (nisar.cal.qfsp_slip.AnomalyCode.SLIP_QFSP_H1): masks only the two DBF beam
@@ -249,15 +249,21 @@ def _l0b_stamp_metrics(granules: list[str], frequency: str, pol: str) -> dict:
             epoch = np.datetime64(_decode(tx["UTCtime"].attrs["units"]).split("since ")[1].strip())
             end = np.datetime64(_decode(fh["science/LSAR/identification/zeroDopplerEndTime"][()]))
         t_end = (end - epoch) / np.timedelta64(1, "ns") * 1e-9
-        dt = np.diff(utc)
-        # a second pulse train interleaves stamps closer than half a PRI
-        n_short = int((dt < 0.5 * np.median(dt)).sum())
-        # the phantom stamps use up rows, so the last real stamp ends early
-        g_tail = float(utc[-1] - t_end)
-        log.info("L0B %s: %d short stamp intervals, last stamp %+.3f s from end", g[:60], n_short, g_tail)
-        short = max(short, n_short)
+        n_short, g_tail = _stamp_faults(utc, t_end)
+        log.info("L0B %s: %d short stamp intervals, last stamp %+.2f PRI from end", g[:60], n_short, g_tail)
+        short += n_short
         tail = min(tail, g_tail)
-    return {"l0b_short_intervals": short, "l0b_tail_s": tail}
+    return {"l0b_short_intervals": short, "l0b_tail_pri": tail}
+
+
+def _stamp_faults(utc: np.ndarray, t_end: float) -> tuple[int, float]:
+    """Short (or backward) stamp intervals and the last stamp's offset from the end time, in PRIs."""
+    dt = np.diff(utc)
+    pri = np.median(dt)
+    # a duplicate or interleaved stamp sits closer than half a PRI to its neighbour
+    n_short = int((dt < 0.5 * pri).sum())
+    # stamps shifted by a duplicate or phantom train leave the last stamp early
+    return n_short, float((utc[-1] - t_end) / pri)
 
 
 def rslc_quality_metrics(
@@ -286,8 +292,8 @@ def rslc_quality_metrics(
         Where QA_STATS.h5 files live or are downloaded to. Defaults to the
         RSLC's directory.
     check_l0b : bool
-        Stream the source L0B time stamps from Earthdata and test for phantom
-        stamps. Needs an Earthdata login.
+        Stream the source L0B time stamps from Earthdata and test for phantom,
+        duplicate or backward stamps. Needs an Earthdata login.
 
     Returns
     -------
@@ -409,8 +415,11 @@ def identify_poorly_focused_rslc(
     - ``DIAGNOSTIC_MODE``: ``diagnosticModeFlag`` nonzero; ASF lists the
       calibration-mode frames 161/174, 161/175, 169/090, 169/091 as unusable
       before August 2026.
-    - ``PHANTOM_STAMPS`` (``check_l0b``): more than 10 L0B stamp intervals under
-      half a PRI, or the last stamp more than 10 ms before the L0B end time.
+    - ``L0B_STAMPS`` (``check_l0b``): any L0B stamp interval under half a PRI
+      (duplicate, backward or phantom stamps), or the last stamp of any L0B more
+      than half a PRI before its end time. Catches the 091_A_022 2026-01-03
+      phantom burst and the 027_D_068 2026-02-04 duplicate stamp, after which
+      every stamp is one pulse early.
 
     With references (other scenes of the same track and frame):
 
@@ -464,8 +473,8 @@ def identify_poorly_focused_rslc(
     swath_ref = float(np.median([r["swath_width_m"] for r in refs])) if refs else NOMINAL_SWATH_M
     if out["swath_width_m"] < SWATH_RATIO * swath_ref:
         flags.append("HALF_SWATH")
-    if out.get("l0b_short_intervals", 0) > STAMP_SHORT or out.get("l0b_tail_s", 0) < STAMP_TAIL_S:
-        flags.append("PHANTOM_STAMPS")
+    if out.get("l0b_short_intervals", 0) > STAMP_SHORT or out.get("l0b_tail_pri", 0) < STAMP_TAIL_PRI:
+        flags.append("L0B_STAMPS")
     if _pre_provisional(out["crid"]):
         flags.append("PRE_PROVISIONAL")
     if out["diagnostic_mode"] != 0:
