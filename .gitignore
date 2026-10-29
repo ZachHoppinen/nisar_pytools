@@ -62,3 +62,6 @@ htmlcov/
 
 # setuptools-scm generated version file
 src/nisar_pytools/_version.py
+
+*.csv
+*.png
