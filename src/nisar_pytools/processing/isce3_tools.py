@@ -81,6 +81,19 @@ def _import_insar_workflow():
     return insar, InsarRunConfig, Persistence, h5_prep
 
 
+def _rslc_bounding_polygon(path: Path):
+    """Read the WGS84 ``identification/boundingPolygon`` from an RSLC file.
+
+    Read with h5py directly because ``open_nisar`` does not support RSLC.
+    """
+    import h5py
+    from shapely import wkt
+
+    with h5py.File(path, "r") as f:
+        raw = f["science/LSAR/identification/boundingPolygon"][()]
+    return wkt.loads(raw.decode() if isinstance(raw, bytes) else raw)
+
+
 def _utm_epsg_from_polygon(poly) -> int:
     """Return the UTM EPSG code for the centroid of a WGS84 polygon."""
     lon = poly.centroid.x
@@ -224,11 +237,7 @@ def rslc_to_gunw(
 
     # ---- Auto-detect EPSG / bbox from the reference RSLC ---------------
     if output_epsg is None or aoi_bbox_utm is None:
-        from nisar_pytools import open_nisar
-        from nisar_pytools.utils.metadata import get_bounding_polygon
-
-        dt = open_nisar(reference_rslc)
-        poly = get_bounding_polygon(dt)
+        poly = _rslc_bounding_polygon(reference_rslc)
         if output_epsg is None:
             output_epsg = _utm_epsg_from_polygon(poly)
             log.info("Auto-detected output EPSG: %d", output_epsg)

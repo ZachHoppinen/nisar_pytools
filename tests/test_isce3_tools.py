@@ -298,3 +298,31 @@ class TestImportError:
             assert "mamba" in msg or "pip" in msg
         else:
             raise AssertionError("expected ImportError")
+
+
+class TestAutoDetectFromRslc:
+    """With no output_epsg / aoi_bbox_utm, rslc_to_gunw must derive both from
+    the reference RSLC's boundingPolygon (open_nisar does not read RSLC)."""
+
+    def test_epsg_and_bbox_from_rslc_polygon(self, tmp_path, monkeypatch):
+        import h5py
+
+        # Minimal RSLC: product type + WGS84 bounding polygon near Rosamond, CA
+        with h5py.File(tmp_path / "ref.h5", "w") as f:
+            ident = f.create_group("science/LSAR/identification")
+            ident["productType"] = b"RSLC"
+            ident["boundingPolygon"] = (
+                b"POLYGON ((-118.07 34.85, -117.92 34.82, -117.96 34.72, "
+                b"-118.11 34.76, -118.07 34.85))"
+            )
+
+        cfg = _run_rslc_to_gunw_mocked(tmp_path, monkeypatch)
+        geo = cfg["runconfig"]["groups"]["processing"]["geocode"]
+        assert geo["output_epsg"] == 32611
+
+        # Expected UTM 11N extent of the polygon vertices, projected independently
+        from pyproj import Transformer
+        tf = Transformer.from_crs(4326, 32611, always_xy=True)
+        xs, ys = tf.transform([-118.07, -117.92, -117.96, -118.11], [34.85, 34.82, 34.72, 34.76])
+        assert geo["top_left"] == pytest.approx({"x_abs": min(xs), "y_abs": max(ys)})
+        assert geo["bottom_right"] == pytest.approx({"x_abs": max(xs), "y_abs": min(ys)})
