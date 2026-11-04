@@ -60,7 +60,6 @@ pip install nisar-pytools
 With optional extras:
 
 ```sh
-pip install nisar-pytools[dem]       # DEM fetching (dem_stitcher)
 pip install nisar-pytools[dolphin]   # dolphin InSAR time-series prep
 pip install nisar-pytools[viz]       # Visualization (matplotlib)
 pip install nisar-pytools[all]       # Everything available from PyPI

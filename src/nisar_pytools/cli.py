@@ -948,8 +948,8 @@ If --runconfig is omitted, a bundled production-spec default is used
 split-spectrum ionosphere correction enabled, troposphere disabled).
 Paths, EPSG, and bbox are filled in at runtime.
 
-If --dem is omitted, a Copernicus 30 m DEM covering the reference RSLC's
-bounding polygon is fetched via dem_stitcher.
+If --dem is omitted, the NISAR DEM (WGS84 ellipsoid heights) covering the reference RSLC's
+bounding polygon is fetched from ASF (needs Earthdata Login in ~/.netrc).
 
 If --epsg / --bbox are omitted, the UTM zone is derived from the scene
 centroid and the bbox is the full RSLC extent in that projection.
@@ -1222,7 +1222,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_r2g.add_argument(
         "--dem",
-        help="Optional DEM raster (TIF or VRT). If omitted, fetched via dem_stitcher.",
+        help="Optional DEM raster (TIF or VRT). If omitted, the NISAR DEM is fetched from ASF.",
     )
     p_r2g.add_argument(
         "--bbox", nargs=4, type=float, metavar=("XMIN", "YMIN", "XMAX", "YMAX"),

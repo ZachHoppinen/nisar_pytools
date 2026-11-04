@@ -20,10 +20,13 @@ NISAR_DEM_URL = "https://nisar.asf.earthdatacloud.nasa.gov/NISAR/DEM/v1.2/EPSG43
 def fetch_dem(
     source: str | os.PathLike | xr.DataTree | xr.DataArray,
     out_path: str | os.PathLike | None = None,
-    dem_name: str = "nisar_dem",
     buffer: float = 0.05,
 ) -> xr.DataArray:
-    """Download a DEM covering a NISAR product's extent.
+    """Download the NISAR DEM covering a NISAR product's extent.
+
+    Reads the NISAR DEM v1.2 from ASF, the Copernicus-derived DEM used in
+    NISAR production, with heights above the WGS84 ellipsoid. Needs
+    Earthdata Login credentials for urs.earthdata.nasa.gov in ``~/.netrc``.
 
     Parameters
     ----------
@@ -34,12 +37,6 @@ def fetch_dem(
         - A DataArray with ``x``/``y`` coordinates and CRS
     out_path : str or Path, optional
         If provided, save the DEM as a GeoTIFF at this path.
-    dem_name : str
-        ``"nisar_dem"`` (default) reads the NISAR DEM v1.2 from ASF, the
-        Copernicus-derived DEM used in NISAR production, with heights above
-        the WGS84 ellipsoid. Needs Earthdata Login credentials in
-        ``~/.netrc``. Any other name (e.g. ``"glo_30"``) is passed to
-        ``dem_stitcher`` and returns heights above the geoid.
     buffer : float
         Buffer in degrees around the extent. Default 0.05.
 
@@ -50,19 +47,7 @@ def fetch_dem(
     """
     bounds = _get_bounds_latlon(source, buffer)
 
-    if dem_name == "nisar_dem":
-        dem_arr, profile = _read_nisar_dem(bounds)
-        long_name = "Elevation above WGS84 ellipsoid"
-    else:
-        from dem_stitcher import stitch_dem
-
-        dem_arr, profile = stitch_dem(
-            bounds,
-            dem_name=dem_name,
-            dst_ellipsoidal_height=False,
-            dst_area_or_point="Point",
-        )
-        long_name = "Elevation above geoid"
+    dem_arr, profile = _read_nisar_dem(bounds)
 
     # Build DataArray from the returned numpy array + rasterio profile
     ny, nx = dem_arr.shape[-2:]
@@ -70,19 +55,18 @@ def fetch_dem(
     x = np.arange(nx) * transform.a + transform.c + transform.a / 2
     y = np.arange(ny) * transform.e + transform.f + transform.e / 2
 
-    # dem_arr may be (1, ny, nx) or (ny, nx)
-    if dem_arr.ndim == 3:
-        dem_arr = dem_arr[0]
-
     da = xr.DataArray(
         dem_arr.astype(np.float32),
         dims=["y", "x"],
         coords={"y": y, "x": x},
         name="elevation",
-        attrs={"units": "m", "long_name": long_name, "dem_name": dem_name},
+        attrs={
+            "units": "m",
+            "long_name": "Elevation above WGS84 ellipsoid",
+            "dem_name": "nisar_dem_v1.2",
+        },
     )
-    epsg = profile.get("crs", "EPSG:4326")
-    da = da.rio.write_crs(epsg)
+    da = da.rio.write_crs(profile["crs"])
     da = da.rio.set_spatial_dims(x_dim="x", y_dim="y")
 
     if out_path is not None:

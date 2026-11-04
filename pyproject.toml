@@ -42,9 +42,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dem = [
-    "dem_stitcher",
-]
 dolphin = [
     "dolphin-sar",
 ]
@@ -76,7 +73,7 @@ viz = [
     "matplotlib",
 ]
 all = [
-    "nisar-pytools[dem,dolphin,notebooks,viz]",
+    "nisar-pytools[dolphin,notebooks,viz]",
 ]
 
 [project.scripts]
