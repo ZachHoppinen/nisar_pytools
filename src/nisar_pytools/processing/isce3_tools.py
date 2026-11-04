@@ -134,7 +134,7 @@ def rslc_to_gunw(
         ``aoi_bbox_utm`` / ``output_epsg`` (auto-detected if missing), and
         ``overrides``.
     dem_file : path-like, optional
-        DEM raster (TIF or VRT). If omitted, a Copernicus 30 m DEM
+        DEM raster (TIF or VRT). If omitted, the NISAR DEM (WGS84 ellipsoid)
         covering ``reference_rslc``'s bounding polygon is fetched via
         :func:`nisar_pytools.utils.dem.fetch_dem` and saved in ``output_dir``.
     aoi_bbox_utm : (xmin, ymin, xmax, ymax), optional
@@ -197,7 +197,7 @@ def rslc_to_gunw(
         from nisar_pytools.utils.dem import fetch_dem
 
         dem_path = output_dir / "dem.tif"
-        log.info("DEM not provided; fetching Copernicus 30 m DEM to %s", dem_path)
+        log.info("DEM not provided; fetching NISAR DEM to %s", dem_path)
         fetch_dem(reference_rslc, out_path=dem_path)
         dem_file = dem_path
     dem_file = Path(dem_file).resolve()

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import math
 import os
+import tempfile
 from pathlib import Path
 
 import h5py
@@ -11,11 +13,14 @@ import rioxarray  # noqa: F401
 import xarray as xr
 from pyproj import Transformer
 
+# Public NISAR DEM v1.2 mosaic hosted by ASF (Earthdata Login required).
+NISAR_DEM_URL = "https://nisar.asf.earthdatacloud.nasa.gov/NISAR/DEM/v1.2/EPSG4326/EPSG4326.vrt"
+
 
 def fetch_dem(
     source: str | os.PathLike | xr.DataTree | xr.DataArray,
     out_path: str | os.PathLike | None = None,
-    dem_name: str = "glo_30",
+    dem_name: str = "nisar_dem",
     buffer: float = 0.05,
 ) -> xr.DataArray:
     """Download a DEM covering a NISAR product's extent.
@@ -30,8 +35,11 @@ def fetch_dem(
     out_path : str or Path, optional
         If provided, save the DEM as a GeoTIFF at this path.
     dem_name : str
-        DEM product name for ``dem_stitcher``. Default ``"glo_30"``
-        (Copernicus GLO-30).
+        ``"nisar_dem"`` (default) reads the NISAR DEM v1.2 from ASF, the
+        Copernicus-derived DEM used in NISAR production, with heights above
+        the WGS84 ellipsoid. Needs Earthdata Login credentials in
+        ``~/.netrc``. Any other name (e.g. ``"glo_30"``) is passed to
+        ``dem_stitcher`` and returns heights above the geoid.
     buffer : float
         Buffer in degrees around the extent. Default 0.05.
 
@@ -40,16 +48,21 @@ def fetch_dem(
     xr.DataArray
         DEM elevation data with CRS set.
     """
-    from dem_stitcher import stitch_dem
-
     bounds = _get_bounds_latlon(source, buffer)
 
-    dem_arr, profile = stitch_dem(
-        bounds,
-        dem_name=dem_name,
-        dst_ellipsoidal_height=False,
-        dst_area_or_point="Point",
-    )
+    if dem_name == "nisar_dem":
+        dem_arr, profile = _read_nisar_dem(bounds)
+        long_name = "Elevation above WGS84 ellipsoid"
+    else:
+        from dem_stitcher import stitch_dem
+
+        dem_arr, profile = stitch_dem(
+            bounds,
+            dem_name=dem_name,
+            dst_ellipsoidal_height=False,
+            dst_area_or_point="Point",
+        )
+        long_name = "Elevation above geoid"
 
     # Build DataArray from the returned numpy array + rasterio profile
     ny, nx = dem_arr.shape[-2:]
@@ -66,7 +79,7 @@ def fetch_dem(
         dims=["y", "x"],
         coords={"y": y, "x": x},
         name="elevation",
-        attrs={"units": "m", "long_name": "Elevation above geoid", "dem_name": dem_name},
+        attrs={"units": "m", "long_name": long_name, "dem_name": dem_name},
     )
     epsg = profile.get("crs", "EPSG:4326")
     da = da.rio.write_crs(epsg)
@@ -78,6 +91,39 @@ def fetch_dem(
         da.rio.to_raster(str(out_path))
 
     return da
+
+
+def _read_nisar_dem(bounds: list[float]) -> tuple[np.ndarray, dict]:
+    """Read the NISAR DEM over [lon_min, lat_min, lon_max, lat_max].
+
+    The window is snapped outward to whole DEM pixels, so the native grid is
+    kept with no resampling.
+    """
+    import rasterio
+    from rasterio.windows import Window
+
+    lon_min, lat_min, lon_max, lat_max = bounds
+    # Earthdata Login redirects need a cookie jar to persist the session.
+    cookies = os.path.join(tempfile.gettempdir(), "nisar_pytools_edl_cookies.txt")
+    env = rasterio.Env(
+        GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR",
+        GDAL_HTTP_COOKIEFILE=cookies,
+        GDAL_HTTP_COOKIEJAR=cookies,
+    )
+    try:
+        with env, rasterio.open(f"/vsicurl/{NISAR_DEM_URL}") as src:
+            # Row/col of the pixels holding the top-left and bottom-right corners
+            row0, col0 = src.index(lon_min, lat_max, op=math.floor)
+            row1, col1 = src.index(lon_max, lat_min, op=math.floor)
+            window = Window.from_slices((row0, row1 + 1), (col0, col1 + 1))
+            dem_arr = src.read(1, window=window)
+            profile = {"transform": src.window_transform(window), "crs": src.crs}
+    except rasterio.errors.RasterioIOError as e:
+        raise RuntimeError(
+            f"Could not read the NISAR DEM from {NISAR_DEM_URL}. It needs "
+            "Earthdata Login credentials for urs.earthdata.nasa.gov in ~/.netrc."
+        ) from e
+    return dem_arr, profile
 
 
 def _get_bounds_latlon(
